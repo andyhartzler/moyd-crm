@@ -8,6 +8,14 @@ export async function POST(request) {
     const body = await request.json()
     const { phone, message, memberId, reaction, replyToGuid, partIndex } = body
 
+    console.log('Send message request:', {
+      phone,
+      hasMessage: !!message,
+      hasReaction: !!reaction,
+      hasReply: !!replyToGuid,
+      memberId
+    })
+
     // Validate required fields
     if (!phone) {
       return NextResponse.json(
@@ -31,7 +39,7 @@ export async function POST(request) {
     if (reaction) {
       return await sendReaction(chatGuid, replyToGuid, reaction, partIndex || 0, phone, memberId)
     } else if (replyToGuid) {
-      return await sendReply(chatGuid, message, replyToGuid, phone, memberId)
+      return await sendReply(chatGuid, message, replyToGuid, phone, memberId, partIndex || 0)
     } else {
       return await sendRegularMessage(chatGuid, message, phone, memberId)
     }
@@ -71,7 +79,7 @@ async function sendRegularMessage(chatGuid, message, phone, memberId) {
     console.error('BlueBubbles API error:', result)
     return NextResponse.json(
       {
-        error: result.error?.error || result.message || 'Failed to send message',
+        error: result.error?.message || result.message || 'Failed to send message',
         details: result
       },
       { status: response.status || 500 }
@@ -93,35 +101,16 @@ async function sendRegularMessage(chatGuid, message, phone, memberId) {
 }
 
 // Send a reply to a specific message
-async function sendReply(chatGuid, message, replyToGuid, phone, memberId) {
+async function sendReply(chatGuid, message, replyToGuid, phone, memberId, partIndex) {
   console.log('Sending reply via BlueBubbles:', {
     host: BB_HOST,
     chatGuid,
     replyToGuid,
+    partIndex,
     messageLength: message.length
   })
 
-  // First, get the message we're replying to
-  const getMessageResponse = await fetch(
-    `${BB_HOST}/api/v1/message/${replyToGuid}?password=${BB_PASSWORD}`,
-    {
-      method: 'GET',
-      headers: { 'Content-Type': 'application/json' }
-    }
-  )
-
-  const originalMessage = await getMessageResponse.json()
-  
-  if (!getMessageResponse.ok) {
-    console.error('Failed to get original message:', originalMessage)
-    // Fall back to regular message if we can't get the original
-    return await sendRegularMessage(chatGuid, message, phone, memberId)
-  }
-
-  // Create a thread identifier
-  const threadIdentifier = originalMessage.data?.threadOriginatorGuid || `p:0/${replyToGuid}`
-
-  // Send the reply
+  // Send the reply with selectedMessageGuid and partIndex
   const response = await fetch(
     `${BB_HOST}/api/v1/message/text?password=${BB_PASSWORD}`,
     {
@@ -132,7 +121,7 @@ async function sendReply(chatGuid, message, replyToGuid, phone, memberId) {
         message: message,
         method: 'private-api',
         selectedMessageGuid: replyToGuid,
-        partIndex: 0
+        partIndex: partIndex
       }),
     }
   )
@@ -143,7 +132,7 @@ async function sendReply(chatGuid, message, replyToGuid, phone, memberId) {
     console.error('BlueBubbles API error:', result)
     return NextResponse.json(
       {
-        error: result.error?.error || result.message || 'Failed to send reply',
+        error: result.error?.message || result.message || 'Failed to send reply',
         details: result
       },
       { status: response.status || 500 }
@@ -154,7 +143,7 @@ async function sendReply(chatGuid, message, replyToGuid, phone, memberId) {
 
   // Save to database with thread info
   if (memberId) {
-    await saveMessageToDatabase(memberId, chatGuid, message, phone, result, 'outbound', threadIdentifier)
+    await saveMessageToDatabase(memberId, chatGuid, message, phone, result, 'outbound', replyToGuid)
   }
 
   return NextResponse.json({
@@ -170,10 +159,11 @@ async function sendReaction(chatGuid, messageGuid, reactionType, partIndex, phon
     host: BB_HOST,
     chatGuid,
     messageGuid,
-    reactionType
+    reactionType,
+    partIndex
   })
 
-  // Map reaction names to codes
+  // Map reaction names to codes (for database storage)
   const reactionMap = {
     'love': 2000,
     'like': 2001,
@@ -198,27 +188,38 @@ async function sendReaction(chatGuid, messageGuid, reactionType, partIndex, phon
     )
   }
 
+  // Send to BlueBubbles - use string reaction type, not code
+  const reactionPayload = {
+    chatGuid: chatGuid,
+    selectedMessageGuid: messageGuid,
+    reaction: reactionType, // Send as string like "love", "like", etc.
+    partIndex: partIndex
+  }
+
+  console.log('Reaction payload:', reactionPayload)
+
   const response = await fetch(
     `${BB_HOST}/api/v1/message/react?password=${BB_PASSWORD}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chatGuid: chatGuid,
-        selectedMessageGuid: messageGuid,
-        reactionType: reactionType,
-        partIndex: partIndex
-      }),
+      body: JSON.stringify(reactionPayload),
     }
   )
 
   const result = await response.json()
 
+  console.log('BlueBubbles reaction response:', {
+    status: response.status,
+    ok: response.ok,
+    result: result
+  })
+
   if (!response.ok || result.status !== 200) {
     console.error('BlueBubbles API error:', result)
     return NextResponse.json(
       {
-        error: result.error?.error || result.message || 'Failed to send reaction',
+        error: result.error?.message || result.message || 'Failed to send reaction',
         details: result
       },
       { status: response.status || 500 }
@@ -263,7 +264,7 @@ async function saveMessageToDatabase(memberId, chatGuid, messageBody, phone, res
         .insert({
           member_id: memberId,
           chat_identifier: chatGuid,
-          status: 'active',
+          status: 'Active',
           last_message_at: new Date().toISOString()
         })
         .select('id')

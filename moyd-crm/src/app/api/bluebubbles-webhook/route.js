@@ -6,10 +6,13 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 )
 
+const BB_HOST = process.env.NEXT_PUBLIC_BLUEBUBBLES_HOST
+const BB_PASSWORD = process.env.NEXT_PUBLIC_BLUEBUBBLES_PASSWORD
+
 export async function POST(request) {
   try {
     const body = await request.json()
-    console.log('Webhook received:', body)
+    console.log('Webhook received:', body.type)
 
     const { type, data } = body
 
@@ -58,25 +61,55 @@ async function handleNewMessage(data) {
       return
     }
 
-    console.log('Processing incoming message:', message.guid)
+    console.log('Processing incoming message:', message.guid?.substring(0, 20))
 
-    // Extract phone number from chatGuid (format: iMessage;-;+1234567890)
-    const chatGuid = message.chats?.[0]?.chatIdentifier || ''
-    const phone = chatGuid.split(';-;')[1] || chatGuid
+    // Extract phone number from chatGuid or handle
+    let phone = null
+    
+    // Try to get from handle first
+    if (message.handle?.address) {
+      phone = message.handle.address
+    } else if (message.chats?.[0]?.chatIdentifier) {
+      // Extract from chat identifier (format: iMessage;-;+1234567890)
+      const chatId = message.chats[0].chatIdentifier
+      if (chatId.includes(';-;')) {
+        phone = chatId.split(';-;')[1]
+      } else {
+        phone = chatId
+      }
+    }
+
+    if (!phone) {
+      console.log('No phone found in message')
+      return
+    }
+
+    // Normalize phone number to E.164 format
+    let normalizedPhone = phone.replace(/[\s\-\(\)]/g, '')
+    if (!normalizedPhone.startsWith('+')) {
+      if (normalizedPhone.startsWith('1') && normalizedPhone.length === 11) {
+        normalizedPhone = '+' + normalizedPhone
+      } else {
+        normalizedPhone = '+1' + normalizedPhone
+      }
+    }
+
+    console.log('Looking for member with phone:', normalizedPhone)
 
     // Find the member by phone
     const { data: members } = await supabase
       .from('members')
       .select('id')
-      .eq('phone_e164', phone)
+      .eq('phone_e164', normalizedPhone)
       .limit(1)
 
     if (!members || members.length === 0) {
-      console.log('No member found for phone:', phone)
+      console.log('No member found for phone:', normalizedPhone)
       return
     }
 
     const memberId = members[0].id
+    console.log('Found member:', memberId)
 
     // Find or create conversation
     let { data: conversation } = await supabase
@@ -85,14 +118,19 @@ async function handleNewMessage(data) {
       .eq('member_id', memberId)
       .single()
 
+    const chatGuid = message.chats?.[0]?.guid || `iMessage;-;${normalizedPhone}`
+
     if (!conversation) {
+      console.log('Creating new conversation')
       const { data: newConv, error } = await supabase
         .from('conversations')
         .insert({
           member_id: memberId,
           chat_identifier: chatGuid,
-          status: 'active',
-          last_message_at: new Date(message.dateCreated).toISOString()
+          status: 'Active',
+          last_message_at: new Date(message.dateCreated).toISOString(),
+          is_typing: false,
+          typing_since: null
         })
         .select('id')
         .single()
@@ -103,10 +141,15 @@ async function handleNewMessage(data) {
       }
       conversation = newConv
     } else {
-      // Update last message time
+      // Update last message time and clear typing indicator
+      console.log('Updating existing conversation')
       await supabase
         .from('conversations')
-        .update({ last_message_at: new Date(message.dateCreated).toISOString() })
+        .update({ 
+          last_message_at: new Date(message.dateCreated).toISOString(),
+          is_typing: false,
+          typing_since: null
+        })
         .eq('id', conversation.id)
     }
 
@@ -122,27 +165,61 @@ async function handleNewMessage(data) {
       return
     }
 
+    // Handle attachments - construct media URL
+    let mediaUrl = null
+    if (message.attachments && message.attachments.length > 0) {
+      const attachment = message.attachments[0]
+      mediaUrl = `${BB_HOST}/api/v1/attachment/${attachment.guid}/download?password=${BB_PASSWORD}`
+      console.log('Message has attachment:', attachment.guid)
+    }
+
+    // Get message text - check for attachment placeholder
+    let messageBody = message.text || ''
+    if (message.hasAttachments && !messageBody) {
+      messageBody = '\ufffc' // Unicode attachment character
+    }
+
     // Create the message
+    const messageData = {
+      conversation_id: conversation.id,
+      body: messageBody,
+      direction: 'inbound',
+      delivery_status: 'delivered',
+      is_read: false,
+      sender_phone: normalizedPhone,
+      guid: message.guid,
+      created_at: new Date(message.dateCreated).toISOString()
+    }
+
+    // Add optional fields if present
+    if (message.associatedMessageGuid) {
+      messageData.associated_message_guid = message.associatedMessageGuid
+    }
+    if (message.associatedMessageType) {
+      messageData.associated_message_type = message.associatedMessageType
+    }
+    if (message.threadOriginatorGuid) {
+      messageData.thread_originator_guid = message.threadOriginatorGuid
+    }
+    if (mediaUrl) {
+      messageData.media_url = mediaUrl
+    }
+    if (message.dateDelivered) {
+      messageData.date_delivered = new Date(message.dateDelivered).toISOString()
+    }
+    if (message.dateRead) {
+      messageData.date_read = new Date(message.dateRead).toISOString()
+      messageData.is_read = true
+    }
+
     const { error: msgError } = await supabase
       .from('messages')
-      .insert({
-        conversation_id: conversation.id,
-        body: message.text || '',
-        direction: 'inbound',
-        delivery_status: 'delivered',
-        is_read: false,
-        sender_phone: phone,
-        guid: message.guid,
-        associated_message_guid: message.associatedMessageGuid,
-        associated_message_type: message.associatedMessageType,
-        thread_originator_guid: message.threadOriginatorGuid,
-        created_at: new Date(message.dateCreated).toISOString()
-      })
+      .insert(messageData)
 
     if (msgError) {
       console.error('Error creating message:', msgError)
     } else {
-      console.log('Message saved successfully:', message.guid)
+      console.log('Message saved successfully:', message.guid?.substring(0, 20))
     }
   } catch (error) {
     console.error('Error handling new message:', error)
@@ -152,24 +229,41 @@ async function handleNewMessage(data) {
 async function handleUpdatedMessage(data) {
   try {
     const message = data
-    console.log('Updating message:', message.guid)
+    console.log('Updating message:', message.guid?.substring(0, 20))
 
-    // Update the message in the database
-    const { error } = await supabase
-      .from('messages')
-      .update({
-        body: message.text || '',
-        delivery_status: message.dateDelivered ? 'delivered' : 'sent',
-        is_read: message.dateRead !== null,
-        date_delivered: message.dateDelivered ? new Date(message.dateDelivered).toISOString() : null,
-        date_read: message.dateRead ? new Date(message.dateRead).toISOString() : null
-      })
-      .eq('guid', message.guid)
+    const updateData = {}
 
-    if (error) {
-      console.error('Error updating message:', error)
-    } else {
-      console.log('Message updated successfully:', message.guid)
+    // Update text if changed
+    if (message.text !== undefined) {
+      updateData.body = message.text
+    }
+
+    // Update delivery status
+    if (message.dateDelivered) {
+      updateData.delivery_status = 'delivered'
+      updateData.date_delivered = new Date(message.dateDelivered).toISOString()
+    }
+
+    // Update read status
+    if (message.dateRead) {
+      updateData.is_read = true
+      updateData.date_read = new Date(message.dateRead).toISOString()
+    } else if (message.isRead !== undefined) {
+      updateData.is_read = message.isRead
+    }
+
+    // Only update if there's something to update
+    if (Object.keys(updateData).length > 0) {
+      const { error } = await supabase
+        .from('messages')
+        .update(updateData)
+        .eq('guid', message.guid)
+
+      if (error) {
+        console.error('Error updating message:', error)
+      } else {
+        console.log('Message updated successfully:', message.guid?.substring(0, 20))
+      }
     }
   } catch (error) {
     console.error('Error handling message update:', error)
@@ -177,17 +271,84 @@ async function handleUpdatedMessage(data) {
 }
 
 async function handleTypingIndicator(data) {
-  // Store typing status in a real-time table or use Supabase Realtime
-  console.log('Typing indicator:', data)
-  
-  // You could update a typing_indicators table here
-  // Or broadcast via Supabase Realtime
+  try {
+    console.log('Typing indicator data:', data)
+
+    // Extract phone from chat identifier
+    // Format can be: "iMessage;-;+1234567890" or just the phone
+    let phone = null
+    
+    if (data.chat) {
+      if (data.chat.includes(';-;')) {
+        phone = data.chat.split(';-;')[1]
+      } else {
+        phone = data.chat
+      }
+    } else if (data.chatGuid) {
+      if (data.chatGuid.includes(';-;')) {
+        phone = data.chatGuid.split(';-;')[1]
+      } else {
+        phone = data.chatGuid
+      }
+    }
+
+    if (!phone) {
+      console.log('Could not extract phone from typing indicator')
+      return
+    }
+
+    // Normalize phone
+    let normalizedPhone = phone.replace(/[\s\-\(\)]/g, '')
+    if (!normalizedPhone.startsWith('+')) {
+      if (normalizedPhone.startsWith('1') && normalizedPhone.length === 11) {
+        normalizedPhone = '+' + normalizedPhone
+      } else {
+        normalizedPhone = '+1' + normalizedPhone
+      }
+    }
+
+    console.log('Typing indicator for phone:', normalizedPhone)
+
+    // Find member
+    const { data: members } = await supabase
+      .from('members')
+      .select('id')
+      .eq('phone_e164', normalizedPhone)
+      .single()
+
+    if (!members) {
+      console.log('Member not found for typing indicator')
+      return
+    }
+
+    // The 'display' field indicates if typing (true) or stopped typing (false)
+    const isTyping = data.display === true
+
+    console.log('Setting typing status to:', isTyping)
+
+    // Update conversation typing status
+    const { error } = await supabase
+      .from('conversations')
+      .update({
+        is_typing: isTyping,
+        typing_since: isTyping ? new Date().toISOString() : null
+      })
+      .eq('member_id', members.id)
+
+    if (error) {
+      console.error('Error updating typing status:', error)
+    } else {
+      console.log('Typing status updated successfully')
+    }
+  } catch (error) {
+    console.error('Error handling typing indicator:', error)
+  }
 }
 
 async function handleReadReceipt(data) {
   try {
     const { guid } = data
-    console.log('Message read:', guid)
+    console.log('Message read:', guid?.substring(0, 20))
 
     // Update message as read
     await supabase
@@ -205,7 +366,7 @@ async function handleReadReceipt(data) {
 async function handleMessageDelivered(data) {
   try {
     const { guid } = data
-    console.log('Message delivered:', guid)
+    console.log('Message delivered:', guid?.substring(0, 20))
 
     // Update message delivery status
     await supabase

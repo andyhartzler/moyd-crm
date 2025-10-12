@@ -3,15 +3,15 @@
 import { useState, useEffect, useRef, Suspense } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
-import { Search, Paperclip, Image as ImageIcon, X } from 'lucide-react'
+import { Search, Paperclip, Image as ImageIcon, X, Send } from 'lucide-react'
 
 const REACTIONS = [
-  { type: 'love', emoji: '❤️', label: 'Love' },
-  { type: 'like', emoji: '👍', label: 'Like' },
-  { type: 'dislike', emoji: '👎', label: 'Dislike' },
-  { type: 'laugh', emoji: '😂', label: 'Laugh' },
-  { type: 'emphasize', emoji: '‼️', label: 'Emphasize' },
-  { type: 'question', emoji: '❓', label: 'Question' }
+  { type: 'love', emoji: '❤️', label: 'Love', code: 2000 },
+  { type: 'like', emoji: '👍', label: 'Like', code: 2001 },
+  { type: 'dislike', emoji: '👎', label: 'Dislike', code: 2002 },
+  { type: 'laugh', emoji: '😂', label: 'Laugh', code: 2003 },
+  { type: 'emphasize', emoji: '‼️', label: 'Emphasize', code: 2004 },
+  { type: 'question', emoji: '❓', label: 'Question', code: 2005 }
 ]
 
 // Separate component that uses useSearchParams
@@ -28,11 +28,14 @@ function MessengerContent() {
   const [error, setError] = useState(null)
   const [replyingTo, setReplyingTo] = useState(null)
   const [showReactionPicker, setShowReactionPicker] = useState(null)
-  const [typingUsers, setTypingUsers] = useState(new Set())
+  const [isTyping, setIsTyping] = useState(false)
+  const [selectedFile, setSelectedFile] = useState(null)
+  const [uploadingFile, setUploadingFile] = useState(false)
   const messagesEndRef = useRef(null)
   const messagesContainerRef = useRef(null)
   const pollIntervalRef = useRef(null)
   const userScrolledUp = useRef(false)
+  const fileInputRef = useRef(null)
 
   // Member selector state
   const [members, setMembers] = useState([])
@@ -66,9 +69,12 @@ function MessengerContent() {
   useEffect(() => {
     if (memberId) {
       loadMessages()
-      scrollToBottom(true) // Force scroll on initial load
+      scrollToBottom(true)
       
-      pollIntervalRef.current = setInterval(loadMessages, 2000)
+      pollIntervalRef.current = setInterval(() => {
+        loadMessages()
+        checkTypingStatus()
+      }, 2000)
       
       return () => {
         if (pollIntervalRef.current) {
@@ -101,6 +107,41 @@ function MessengerContent() {
     }
   }
 
+  const checkTypingStatus = async () => {
+    if (!memberId) return
+    
+    try {
+      // Get the conversation for this member
+      const { data: convData } = await supabase
+        .from('conversations')
+        .select('is_typing, typing_since')
+        .eq('member_id', memberId)
+        .single()
+
+      if (convData && convData.is_typing) {
+        // Check if typing indicator is stale (more than 10 seconds old)
+        const typingSince = new Date(convData.typing_since)
+        const now = new Date()
+        const secondsSince = (now - typingSince) / 1000
+
+        if (secondsSince < 10) {
+          setIsTyping(true)
+        } else {
+          setIsTyping(false)
+          // Clear stale typing indicator
+          await supabase
+            .from('conversations')
+            .update({ is_typing: false, typing_since: null })
+            .eq('member_id', memberId)
+        }
+      } else {
+        setIsTyping(false)
+      }
+    } catch (err) {
+      console.error('Error checking typing status:', err)
+    }
+  }
+
   const loadMessages = async () => {
     try {
       const response = await fetch(`/api/messages?memberId=${memberId}`)
@@ -119,7 +160,9 @@ function MessengerContent() {
     const processedMessages = []
 
     rawMessages.forEach(msg => {
+      // Check if this is a reaction (associated_message_type >= 2000)
       if (msg.associated_message_guid && msg.associated_message_type >= 2000) {
+        // This is a reaction, add it to the parent message
         if (!messageMap[msg.associated_message_guid]) {
           messageMap[msg.associated_message_guid] = { reactions: [] }
         }
@@ -129,6 +172,7 @@ function MessengerContent() {
           created_at: msg.created_at
         })
       } else {
+        // This is a regular message
         messageMap[msg.guid] = {
           ...msg,
           reactions: messageMap[msg.guid]?.reactions || []
@@ -140,10 +184,17 @@ function MessengerContent() {
     return processedMessages
   }
 
+  const handleFileSelect = async (e) => {
+    const file = e.target.files[0]
+    if (!file) return
+
+    setSelectedFile(file)
+  }
+
   const handleSendMessage = async (e) => {
     e.preventDefault()
     
-    if (!message.trim() && !replyingTo) return
+    if (!message.trim() && !selectedFile && !replyingTo) return
 
     setLoading(true)
     setError(null)
@@ -151,35 +202,73 @@ function MessengerContent() {
     try {
       const payload = {
         phone,
-        message: message.trim(),
         memberId,
       }
 
-      if (replyingTo) {
-        payload.replyToGuid = replyingTo.guid
-      }
+      // If we have a file, upload it first
+      if (selectedFile) {
+        setUploadingFile(true)
+        const formData = new FormData()
+        formData.append('file', selectedFile)
+        formData.append('phone', phone)
+        formData.append('memberId', memberId)
+        
+        if (message.trim()) {
+          formData.append('message', message.trim())
+        }
+        
+        if (replyingTo) {
+          formData.append('replyToGuid', replyingTo.guid)
+          formData.append('partIndex', '0')
+        }
 
-      const response = await fetch('/api/send-message', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      })
+        const response = await fetch('/api/send-attachment', {
+          method: 'POST',
+          body: formData,
+        })
 
-      const data = await response.json()
+        const data = await response.json()
 
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to send message')
+        if (!response.ok) {
+          throw new Error(data.error || 'Failed to send attachment')
+        }
+
+        setSelectedFile(null)
+        if (fileInputRef.current) {
+          fileInputRef.current.value = ''
+        }
+      } else {
+        // Send text message
+        payload.message = message.trim()
+
+        if (replyingTo) {
+          payload.replyToGuid = replyingTo.guid
+          payload.partIndex = 0
+        }
+
+        const response = await fetch('/api/send-message', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        })
+
+        const data = await response.json()
+
+        if (!response.ok) {
+          throw new Error(data.error || 'Failed to send message')
+        }
       }
 
       await loadMessages()
       setMessage('')
       setReplyingTo(null)
-      scrollToBottom(true) // Force scroll after sending
+      scrollToBottom(true)
     } catch (err) {
       setError(err.message)
       console.error('Error sending message:', err)
     } finally {
       setLoading(false)
+      setUploadingFile(false)
     }
   }
 
@@ -207,11 +296,8 @@ function MessengerContent() {
   }
 
   const getReactionEmoji = (type) => {
-    const reactionMap = {
-      2000: '❤️', 2001: '👍', 2002: '👎', 2003: '😂', 2004: '‼️', 2005: '❓',
-      3000: '', 3001: '', 3002: '', 3003: '', 3004: '', 3005: ''
-    }
-    return reactionMap[type] || ''
+    const reaction = REACTIONS.find(r => r.code === type)
+    return reaction ? reaction.emoji : ''
   }
 
   const getStatusIcon = (msg) => {
@@ -219,9 +305,9 @@ function MessengerContent() {
     
     if (msg.is_read) {
       return <span className="text-blue-500 text-xs ml-1">✓✓</span>
-    } else if (msg.delivery_status === 'delivered') {
+    } else if (msg.delivery_status === 'Delivered') {
       return <span className="text-gray-400 text-xs ml-1">✓✓</span>
-    } else if (msg.delivery_status === 'sent') {
+    } else if (msg.delivery_status === 'Sent') {
       return <span className="text-gray-400 text-xs ml-1">✓</span>
     }
     return null
@@ -244,7 +330,55 @@ function MessengerContent() {
 
   // Check if message has attachments
   const hasAttachments = (msg) => {
-    return msg.body === '\ufffc' || msg.body?.includes('\ufffc')
+    return msg.body === '\ufffc' || msg.body?.includes('\ufffc') || msg.media_url
+  }
+
+  // Render attachment (image/video/file)
+  const renderAttachment = (msg) => {
+    if (!msg.media_url) {
+      return <div className="text-sm opacity-75">📎 Attachment</div>
+    }
+
+    const url = msg.media_url
+    const isImage = url.includes('image') || url.match(/\.(jpg|jpeg|png|gif|webp|heic)$/i)
+    const isVideo = url.includes('video') || url.match(/\.(mp4|mov|avi)$/i)
+
+    if (isImage) {
+      return (
+        <a href={url} target="_blank" rel="noopener noreferrer">
+          <img 
+            src={url} 
+            alt="Attachment" 
+            className="max-w-full rounded-lg cursor-pointer hover:opacity-90 transition-opacity"
+            style={{ maxHeight: '300px' }}
+            loading="lazy"
+          />
+        </a>
+      )
+    } else if (isVideo) {
+      return (
+        <video 
+          controls 
+          className="max-w-full rounded-lg"
+          style={{ maxHeight: '300px' }}
+        >
+          <source src={url} type="video/mp4" />
+          Your browser doesn't support video playback.
+        </video>
+      )
+    } else {
+      return (
+        <a 
+          href={url} 
+          target="_blank" 
+          rel="noopener noreferrer"
+          className="flex items-center gap-2 text-sm hover:underline"
+        >
+          <Paperclip className="h-4 w-4" />
+          <span>View Attachment</span>
+        </a>
+      )
+    }
   }
 
   // If no parameters, show member selector
@@ -331,7 +465,7 @@ function MessengerContent() {
   // Show messenger interface if we have parameters
   return (
     <div className="min-h-screen bg-gray-100 flex flex-col">
-      {/* Header - More compact like iMessage */}
+      {/* Header */}
       <div className="bg-white border-b border-gray-200 sticky top-0 z-10 shadow-sm">
         <div className="max-w-4xl mx-auto px-4 py-3">
           <div className="flex items-center justify-between">
@@ -366,23 +500,18 @@ function MessengerContent() {
             </div>
           ) : (
             messages.map((msg, index) => {
-              if (msg.associated_message_guid && msg.associated_message_type >= 2000) {
-                return null
-              }
-
               const isOutbound = msg.direction === 'outbound'
               const repliedMessage = msg.thread_originator_guid 
                 ? findMessageByGuid(msg.thread_originator_guid) 
                 : null
-              const showAvatar = index === 0 || messages[index - 1]?.direction !== msg.direction
 
               return (
                 <div
                   key={msg.guid || index}
                   className={`flex ${isOutbound ? 'justify-end' : 'justify-start'} group`}
                 >
-                  <div className={`max-w-xs lg:max-w-md relative ${!isOutbound && showAvatar ? 'ml-8' : ''}`}>
-                    {/* Reply Preview - Improved */}
+                  <div className={`max-w-xs lg:max-w-md relative`}>
+                    {/* Reply Preview */}
                     {repliedMessage && (
                       <div className={`text-xs mb-1 px-3 py-1.5 rounded-lg ${
                         isOutbound 
@@ -408,17 +537,17 @@ function MessengerContent() {
                     >
                       {hasAttachments(msg) ? (
                         <div className="space-y-1">
-                          <div className="text-sm">📎 Attachment</div>
-                          <p className="text-xs opacity-75">
-                            (Image/video viewing coming soon)
-                          </p>
+                          {renderAttachment(msg)}
+                          {msg.body && msg.body !== '\ufffc' && (
+                            <p className="text-sm mt-2">{msg.body}</p>
+                          )}
                         </div>
                       ) : (
-                        <p className="text-sm break-words">{msg.body}</p>
+                        <p className="text-sm break-words whitespace-pre-wrap">{msg.body}</p>
                       )}
                     </div>
 
-                    {/* Timestamp and Status - Compact */}
+                    {/* Timestamp and Status */}
                     <div className={`flex items-center mt-0.5 px-1 ${isOutbound ? 'justify-end' : 'justify-start'}`}>
                       <p className="text-xs text-gray-500">
                         {new Date(msg.created_at).toLocaleTimeString([], {
@@ -461,7 +590,7 @@ function MessengerContent() {
                       </button>
                     </div>
 
-                    {/* Reaction Picker - Fixed positioning */}
+                    {/* Reaction Picker */}
                     {showReactionPicker === msg.guid && (
                       <div 
                         className={`absolute ${isOutbound ? 'right-0' : 'left-0'} mt-2 p-2 bg-white rounded-xl shadow-xl border border-gray-200 flex gap-2 z-50`}
@@ -484,6 +613,20 @@ function MessengerContent() {
               )
             })
           )}
+
+          {/* Typing Indicator */}
+          {isTyping && (
+            <div className="flex justify-start">
+              <div className="bg-white rounded-2xl rounded-tl-sm shadow-sm px-4 py-2">
+                <div className="flex space-x-1">
+                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                </div>
+              </div>
+            </div>
+          )}
+
           <div ref={messagesEndRef} />
         </div>
       </div>
@@ -495,6 +638,34 @@ function MessengerContent() {
           {error && (
             <div className="mb-2 p-2 bg-red-50 border border-red-200 rounded-lg">
               <p className="text-xs text-red-800">{error}</p>
+            </div>
+          )}
+
+          {/* File Preview */}
+          {selectedFile && (
+            <div className="mb-2 p-2 bg-gray-50 border border-gray-200 rounded-lg flex items-center justify-between">
+              <div className="flex items-center gap-2 flex-1 min-w-0">
+                {selectedFile.type.startsWith('image/') ? (
+                  <ImageIcon className="h-4 w-4 text-gray-500 flex-shrink-0" />
+                ) : (
+                  <Paperclip className="h-4 w-4 text-gray-500 flex-shrink-0" />
+                )}
+                <span className="text-xs text-gray-700 truncate">{selectedFile.name}</span>
+                <span className="text-xs text-gray-500 flex-shrink-0">
+                  ({(selectedFile.size / 1024).toFixed(1)} KB)
+                </span>
+              </div>
+              <button
+                onClick={() => {
+                  setSelectedFile(null)
+                  if (fileInputRef.current) {
+                    fileInputRef.current.value = ''
+                  }
+                }}
+                className="ml-2 text-gray-400 hover:text-gray-600"
+              >
+                <X className="h-4 w-4" />
+              </button>
             </div>
           )}
 
@@ -520,10 +691,19 @@ function MessengerContent() {
 
           {/* Input Form */}
           <form onSubmit={handleSendMessage} className="flex items-end gap-2">
+            <input
+              ref={fileInputRef}
+              type="file"
+              onChange={handleFileSelect}
+              className="hidden"
+              accept="image/*,video/*,.pdf,.doc,.docx,.txt"
+            />
             <button
               type="button"
+              onClick={() => fileInputRef.current?.click()}
               className="p-2 text-gray-400 hover:text-gray-600 transition-colors"
-              title="Attach file (coming soon)"
+              title="Attach file"
+              disabled={loading || uploadingFile}
             >
               <Paperclip className="h-5 w-5" />
             </button>
@@ -532,9 +712,9 @@ function MessengerContent() {
                 type="text"
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
-                placeholder={replyingTo ? "Reply..." : "iMessage"}
+                placeholder={selectedFile ? "Add a message (optional)" : (replyingTo ? "Reply..." : "iMessage")}
                 className="flex-1 bg-transparent border-none focus:outline-none text-sm text-gray-900 placeholder-gray-500"
-                disabled={loading}
+                disabled={loading || uploadingFile}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault()
@@ -545,12 +725,14 @@ function MessengerContent() {
             </div>
             <button
               type="submit"
-              disabled={loading || (!message.trim() && !replyingTo)}
+              disabled={loading || uploadingFile || (!message.trim() && !selectedFile && !replyingTo)}
               className="p-2 bg-blue-500 text-white rounded-full hover:bg-blue-600 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
             >
-              <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 20 20">
-                <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
-              </svg>
+              {uploadingFile ? (
+                <div className="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full"></div>
+              ) : (
+                <Send className="h-5 w-5" />
+              )}
             </button>
           </form>
         </div>
