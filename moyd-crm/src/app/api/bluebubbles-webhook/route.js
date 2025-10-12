@@ -69,7 +69,27 @@ async function handleNewMessage(data) {
   try {
     const message = data
     
-    // Skip if it's from us
+    console.log('📨 New message received:', {
+      guid: message.guid?.substring(0, 20),
+      isFromMe: message.isFromMe,
+      hasAttachments: message.hasAttachments,
+      associatedMessageType: message.associatedMessageType,
+      text: message.text?.substring(0, 50)
+    })
+
+    // ⚠️ CRITICAL: Check if this is a REACTION first (before checking isFromMe)
+    // Reactions can be from us OR from them
+    if (message.associatedMessageGuid && message.associatedMessageType >= 2000) {
+      console.log('🎭 Processing reaction:', {
+        type: message.associatedMessageType,
+        targetGuid: message.associatedMessageGuid,
+        isFromMe: message.isFromMe
+      })
+      await handleIncomingReaction(message)
+      return
+    }
+
+    // Skip regular messages if it's from us (but reactions are already handled above)
     if (message.isFromMe) {
       console.log('Skipping our own message')
       return
@@ -189,8 +209,11 @@ async function handleNewMessage(data) {
 
     // Get message text - check for attachment placeholder
     let messageBody = message.text || ''
-    if (message.hasAttachments && !messageBody) {
+    
+    // ⚠️ IMPORTANT: Handle attachment-only messages
+    if (message.hasAttachments && (!messageBody || messageBody.trim() === '')) {
       messageBody = '\ufffc' // Unicode attachment character
+      console.log('Set body to attachment placeholder')
     }
 
     // Create the message
@@ -217,6 +240,7 @@ async function handleNewMessage(data) {
     }
     if (mediaUrl) {
       messageData.media_url = mediaUrl
+      console.log('Saved media URL to message')
     }
     if (message.dateDelivered) {
       messageData.date_delivered = new Date(message.dateDelivered).toISOString()
@@ -237,6 +261,108 @@ async function handleNewMessage(data) {
     }
   } catch (error) {
     console.error('Error handling new message:', error)
+  }
+}
+
+async function handleIncomingReaction(message) {
+  try {
+    console.log('🎭 Processing incoming reaction:', {
+      guid: message.guid,
+      associatedGuid: message.associatedMessageGuid,
+      type: message.associatedMessageType,
+      isFromMe: message.isFromMe
+    })
+
+    // Get the phone number to find the member/conversation
+    let phone = null
+    
+    if (message.handle?.address) {
+      phone = message.handle.address
+    } else if (message.chats?.[0]?.chatIdentifier) {
+      const chatId = message.chats[0].chatIdentifier
+      if (chatId.includes(';-;')) {
+        phone = chatId.split(';-;')[1]
+      } else {
+        phone = chatId
+      }
+    }
+
+    if (!phone) {
+      console.log('No phone found in reaction')
+      return
+    }
+
+    // Normalize phone
+    let normalizedPhone = phone.replace(/[\s\-\(\)]/g, '')
+    if (!normalizedPhone.startsWith('+')) {
+      if (normalizedPhone.startsWith('1') && normalizedPhone.length === 11) {
+        normalizedPhone = '+' + normalizedPhone
+      } else {
+        normalizedPhone = '+1' + normalizedPhone
+      }
+    }
+
+    // Find member
+    const { data: members } = await supabase
+      .from('members')
+      .select('id')
+      .eq('phone_e164', normalizedPhone)
+      .single()
+
+    if (!members) {
+      console.log('Member not found for reaction')
+      return
+    }
+
+    // Find conversation
+    const { data: conversation } = await supabase
+      .from('conversations')
+      .select('id')
+      .eq('member_id', members.id)
+      .single()
+
+    if (!conversation) {
+      console.log('Conversation not found for reaction')
+      return
+    }
+
+    // Check if reaction already exists
+    const { data: existingReaction } = await supabase
+      .from('messages')
+      .select('id')
+      .eq('guid', message.guid)
+      .single()
+
+    if (existingReaction) {
+      console.log('Reaction already exists:', message.guid)
+      return
+    }
+
+    // Save reaction as a message with association
+    const reactionData = {
+      conversation_id: conversation.id,
+      body: '', // Reactions don't have body text
+      direction: message.isFromMe ? 'outbound' : 'inbound',
+      delivery_status: 'delivered',
+      sender_phone: normalizedPhone,
+      guid: message.guid,
+      associated_message_guid: message.associatedMessageGuid,
+      associated_message_type: message.associatedMessageType,
+      is_read: true,
+      created_at: new Date(message.dateCreated).toISOString()
+    }
+
+    const { error } = await supabase
+      .from('messages')
+      .insert(reactionData)
+
+    if (error) {
+      console.error('Error saving reaction:', error)
+    } else {
+      console.log('✅ Reaction saved successfully')
+    }
+  } catch (error) {
+    console.error('Error handling incoming reaction:', error)
   }
 }
 

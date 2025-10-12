@@ -79,8 +79,8 @@ export async function POST(request) {
     // ==========================================
     const payload = {
       chatGuid: chatGuid,
-      attachmentData: base64WithPrefix,  // Full data URL format
-      attachmentName: file.name,
+      attachment: base64WithPrefix,  // Base64 data
+      name: file.name,               // ⚠️ FIXED: BlueBubbles expects 'name' not 'attachmentName'
       method: 'private-api'
     }
 
@@ -101,7 +101,8 @@ export async function POST(request) {
       fileName: file.name,
       fileSize: file.size,
       hasMessage: !!message,
-      isReply: !!replyToGuid
+      isReply: !!replyToGuid,
+      payloadKeys: Object.keys(payload)
     })
 
     // ==========================================
@@ -133,7 +134,7 @@ export async function POST(request) {
       let errorMessage = 'Failed to send attachment'
       try {
         const errorData = JSON.parse(responseText)
-        errorMessage = errorData.message || errorData.error || errorMessage
+        errorMessage = errorData.message || errorData.error?.message || errorMessage
       } catch (e) {
         errorMessage = responseText || errorMessage
       }
