@@ -12,7 +12,7 @@ const BB_PASSWORD = process.env.NEXT_PUBLIC_BLUEBUBBLES_PASSWORD
 export async function POST(request) {
   try {
     const body = await request.json()
-    console.log('Webhook received:', body.type)
+    console.log('Webhook received:', body.type, 'at', new Date().toISOString())
 
     const { type, data } = body
 
@@ -37,6 +37,19 @@ export async function POST(request) {
         await handleMessageDelivered(data)
         break
 
+      case 'message-send-error':
+        await handleSendError(data)
+        break
+
+      case 'group-name-change':
+        await handleGroupNameChange(data)
+        break
+
+      case 'participant-added':
+      case 'participant-removed':
+        await handleParticipantChange(data, type)
+        break
+
       default:
         console.log('Unknown webhook type:', type)
     }
@@ -44,10 +57,11 @@ export async function POST(request) {
     return NextResponse.json({ success: true })
   } catch (error) {
     console.error('Webhook error:', error)
-    return NextResponse.json(
-      { error: error.message },
-      { status: 500 }
-    )
+    // Return 200 even on error so BlueBubbles doesn't retry
+    return NextResponse.json({ 
+      success: true, 
+      error: error.message 
+    })
   }
 }
 
@@ -378,5 +392,41 @@ async function handleMessageDelivered(data) {
       .eq('guid', guid)
   } catch (error) {
     console.error('Error handling delivery receipt:', error)
+  }
+}
+
+async function handleSendError(data) {
+  try {
+    const { guid, error: errorMessage } = data
+    console.log('Message send error:', guid?.substring(0, 20), errorMessage)
+
+    // Update message status to failed
+    await supabase
+      .from('messages')
+      .update({
+        delivery_status: 'failed',
+        error: errorMessage || 'Failed to send'
+      })
+      .eq('guid', guid)
+  } catch (error) {
+    console.error('Error handling send error:', error)
+  }
+}
+
+async function handleGroupNameChange(data) {
+  try {
+    console.log('Group name changed:', data)
+    // Implement if you need to track group name changes
+  } catch (error) {
+    console.error('Error handling group name change:', error)
+  }
+}
+
+async function handleParticipantChange(data, type) {
+  try {
+    console.log('Participant change:', type, data)
+    // Implement if you need to track participant additions/removals
+  } catch (error) {
+    console.error('Error handling participant change:', error)
   }
 }

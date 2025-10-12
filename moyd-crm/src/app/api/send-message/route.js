@@ -13,7 +13,8 @@ export async function POST(request) {
       hasMessage: !!message,
       hasReaction: !!reaction,
       hasReply: !!replyToGuid,
-      memberId
+      memberId,
+      timestamp: new Date().toISOString()
     })
 
     // Validate required fields
@@ -121,7 +122,7 @@ async function sendReply(chatGuid, message, replyToGuid, phone, memberId, partIn
         message: message,
         method: 'private-api',
         selectedMessageGuid: replyToGuid,
-        partIndex: partIndex
+        partIndex: parseInt(partIndex) || 0
       }),
     }
   )
@@ -163,6 +164,21 @@ async function sendReaction(chatGuid, messageGuid, reactionType, partIndex, phon
     partIndex
   })
 
+  // Validate reaction type
+  const validReactions = [
+    'love', 'like', 'dislike', 'laugh', 'emphasize', 'question',
+    '-love', '-like', '-dislike', '-laugh', '-emphasize', '-question'
+  ]
+
+  const normalizedReaction = reactionType.toLowerCase()
+  
+  if (!validReactions.includes(normalizedReaction)) {
+    return NextResponse.json(
+      { error: `Invalid reaction type: ${reactionType}. Must be one of: ${validReactions.join(', ')}` },
+      { status: 400 }
+    )
+  }
+
   // Map reaction names to codes (for database storage)
   const reactionMap = {
     'love': 2000,
@@ -179,21 +195,15 @@ async function sendReaction(chatGuid, messageGuid, reactionType, partIndex, phon
     '-question': 3005
   }
 
-  const reactionCode = reactionMap[reactionType.toLowerCase()]
-  
-  if (!reactionCode) {
-    return NextResponse.json(
-      { error: 'Invalid reaction type' },
-      { status: 400 }
-    )
-  }
+  const reactionCode = reactionMap[normalizedReaction]
 
   // Send to BlueBubbles - use string reaction type, not code
   const reactionPayload = {
     chatGuid: chatGuid,
     selectedMessageGuid: messageGuid,
-    reaction: reactionType, // Send as string like "love", "like", etc.
-    partIndex: partIndex
+    reaction: normalizedReaction,
+    partIndex: parseInt(partIndex) || 0,
+    method: 'private-api'
   }
 
   console.log('Reaction payload:', reactionPayload)
