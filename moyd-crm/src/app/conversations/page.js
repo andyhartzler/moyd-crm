@@ -23,8 +23,8 @@ export default function ConversationsPage() {
         .from('conversations')
         .select(`
           *,
-          member:members(id, name, phone, county),
-          messages(id, body, direction, created_at, read)
+          member:member_id(id, name, phone, phone_e164, county),
+          messages(id, body, direction, created_at, is_read)
         `)
         .order('last_message_at', { ascending: false, nullsFirst: false })
 
@@ -37,13 +37,26 @@ export default function ConversationsPage() {
       if (error) throw error
 
       // Process conversations to add unread count
-      const processedConversations = data.map(conv => ({
-        ...conv,
-        unreadCount: conv.messages?.filter(
-          m => m.direction === 'inbound' && !m.read
-        ).length || 0,
-        lastMessage: conv.messages?.[conv.messages.length - 1]
-      }))
+      const processedConversations = data.map(conv => {
+        // Handle if member is returned as JSON string
+        let member = conv.member
+        if (typeof member === 'string') {
+          try {
+            member = JSON.parse(member)
+          } catch (e) {
+            member = null
+          }
+        }
+
+        return {
+          ...conv,
+          member,
+          unreadCount: conv.messages?.filter(
+            m => m.direction === 'inbound' && !m.is_read
+          ).length || 0,
+          lastMessage: conv.messages?.[conv.messages.length - 1]
+        }
+      })
 
       setConversations(processedConversations)
     } catch (error) {
@@ -101,84 +114,92 @@ export default function ConversationsPage() {
             </p>
             <div className="mt-6">
               <Link
-                href="/messenger"
+                href="/members"
                 className="inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700"
               >
                 <MessageSquare className="mr-2 h-5 w-5" />
-                Send a Message
+                Go to Members
               </Link>
             </div>
           </div>
         ) : (
           <div className="bg-white shadow overflow-hidden sm:rounded-lg">
             <ul className="divide-y divide-gray-200">
-              {conversations.map((conversation) => (
-                <li key={conversation.id}>
-                  <Link
-                    href={`/messenger?conversation=${conversation.id}`}
-                    className="block hover:bg-gray-50 transition-colors"
-                  >
-                    <div className="px-4 py-4 sm:px-6">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center min-w-0 flex-1">
-                          <div className="flex-shrink-0">
-                            <div className="h-10 w-10 rounded-full bg-blue-100 flex items-center justify-center">
-                              <User className="h-6 w-6 text-blue-600" />
+              {conversations.map((conversation) => {
+                const member = conversation.member
+                const memberName = member?.name || 'Unknown Member'
+                const memberPhone = member?.phone_e164 || member?.phone || 'No phone'
+                const memberCounty = member?.county
+                const memberId = member?.id
+
+                return (
+                  <li key={conversation.id}>
+                    <Link
+                      href={`/messenger?phone=${encodeURIComponent(memberPhone)}&name=${encodeURIComponent(memberName)}&memberId=${memberId}`}
+                      className="block hover:bg-gray-50 transition-colors"
+                    >
+                      <div className="px-4 py-4 sm:px-6">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center min-w-0 flex-1">
+                            <div className="flex-shrink-0">
+                              <div className="h-10 w-10 rounded-full bg-blue-100 flex items-center justify-center">
+                                <User className="h-6 w-6 text-blue-600" />
+                              </div>
                             </div>
-                          </div>
-                          <div className="ml-4 flex-1 min-w-0">
-                            <div className="flex items-center justify-between">
-                              <p className="text-sm font-medium text-gray-900 truncate">
-                                {conversation.member?.name || 'Unknown Member'}
-                              </p>
-                              {conversation.unreadCount > 0 && (
-                                <span className="ml-2 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                                  {conversation.unreadCount} new
+                            <div className="ml-4 flex-1 min-w-0">
+                              <div className="flex items-center justify-between">
+                                <p className="text-sm font-medium text-gray-900 truncate">
+                                  {memberName}
+                                </p>
+                                {conversation.unreadCount > 0 && (
+                                  <span className="ml-2 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                                    {conversation.unreadCount} new
+                                  </span>
+                                )}
+                              </div>
+                              <div className="mt-1 flex items-center text-sm text-gray-500">
+                                <span className="truncate">
+                                  {memberPhone}
                                 </span>
+                                {memberCounty && (
+                                  <>
+                                    <span className="mx-2">•</span>
+                                    <span>{memberCounty}</span>
+                                  </>
+                                )}
+                              </div>
+                              {conversation.lastMessage && (
+                                <p className="mt-1 text-sm text-gray-600 truncate">
+                                  {conversation.lastMessage.direction === 'outbound' && 'You: '}
+                                  {conversation.lastMessage.body}
+                                </p>
                               )}
                             </div>
-                            <div className="mt-1 flex items-center text-sm text-gray-500">
-                              <span className="truncate">
-                                {conversation.member?.phone || 'No phone'}
-                              </span>
-                              {conversation.member?.county && (
-                                <>
-                                  <span className="mx-2">•</span>
-                                  <span>{conversation.member.county}</span>
-                                </>
-                              )}
-                            </div>
-                            {conversation.lastMessage && (
-                              <p className="mt-1 text-sm text-gray-600 truncate">
-                                {conversation.lastMessage.direction === 'outbound' && 'You: '}
-                                {conversation.lastMessage.body}
-                              </p>
-                            )}
                           </div>
-                        </div>
-                        <div className="ml-4 flex-shrink-0 flex items-center space-x-4">
-                          <div className="text-right">
-                            <div className="flex items-center text-sm text-gray-500">
-                              <Clock className="mr-1 h-4 w-4" />
-                              {conversation.last_message_at
-                                ? format(new Date(conversation.last_message_at), 'MMM d, h:mm a')
-                                : 'No messages'}
+                          <div className="ml-4 flex-shrink-0 flex items-center space-x-4">
+                            <div className="text-right">
+                              <div className="flex items-center text-sm text-gray-500">
+                                <Clock className="mr-1 h-4 w-4" />
+                                {conversation.last_message_at
+                                  ? format(new Date(conversation.last_message_at), 'MMM d, h:mm a')
+                                  : 'No messages'}
+                              </div>
+                              <span className={`mt-1 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                                conversation.status === 'active' ? 'bg-green-100 text-green-800' :
+                                conversation.status === 'waiting' ? 'bg-yellow-100 text-yellow-800' :
+                                conversation.status === 'resolved' ? 'bg-gray-100 text-gray-800' :
+                                'bg-gray-100 text-gray-600'
+                              }`}>
+                                {conversation.status || 'unknown'}
+                              </span>
                             </div>
-                            <span className={`mt-1 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                              conversation.status === 'active' ? 'bg-green-100 text-green-800' :
-                              conversation.status === 'waiting' ? 'bg-yellow-100 text-yellow-800' :
-                              conversation.status === 'resolved' ? 'bg-gray-100 text-gray-800' :
-                              'bg-gray-100 text-gray-600'
-                            }`}>
-                              {conversation.status || 'unknown'}
-                            </span>
                           </div>
                         </div>
                       </div>
-                    </div>
-                  </Link>
-                </li>
-              ))}
+                    </Link>
+                  </li>
+                )
+              })}
             </ul>
           </div>
         )}

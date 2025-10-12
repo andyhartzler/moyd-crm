@@ -1,7 +1,9 @@
 'use client'
 
 import { useState, useEffect, useRef, Suspense } from 'react'
-import { useSearchParams } from 'next/navigation'
+import { useSearchParams, useRouter } from 'next/navigation'
+import { supabase } from '@/lib/supabase'
+import { Search } from 'lucide-react'
 
 const REACTIONS = [
   { type: 'love', emoji: '❤️', label: 'Love' },
@@ -15,6 +17,7 @@ const REACTIONS = [
 // Separate component that uses useSearchParams
 function MessengerContent() {
   const searchParams = useSearchParams()
+  const router = useRouter()
   const phone = searchParams.get('phone')
   const name = searchParams.get('name')
   const memberId = searchParams.get('memberId')
@@ -28,10 +31,23 @@ function MessengerContent() {
   const messagesEndRef = useRef(null)
   const pollIntervalRef = useRef(null)
 
+  // Member selector state
+  const [members, setMembers] = useState([])
+  const [searchTerm, setSearchTerm] = useState('')
+  const [loadingMembers, setLoadingMembers] = useState(false)
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }
 
+  // Load members if no phone/name/memberId provided
+  useEffect(() => {
+    if (!phone && !name && !memberId) {
+      loadMembers()
+    }
+  }, [phone, name, memberId])
+
+  // Load messages if we have a memberId
   useEffect(() => {
     if (memberId) {
       loadMessages()
@@ -48,6 +64,24 @@ function MessengerContent() {
   useEffect(() => {
     scrollToBottom()
   }, [messages])
+
+  const loadMembers = async () => {
+    setLoadingMembers(true)
+    try {
+      const { data, error } = await supabase
+        .from('members')
+        .select('id, name, phone, phone_e164')
+        .order('name', { ascending: true })
+        .limit(100)
+
+      if (error) throw error
+      setMembers(data || [])
+    } catch (err) {
+      console.error('Error loading members:', err)
+    } finally {
+      setLoadingMembers(false)
+    }
+  }
 
   const loadMessages = async () => {
     try {
@@ -178,17 +212,99 @@ function MessengerContent() {
     return messages.find(m => m.guid === guid)
   }
 
-  if (!phone || !name) {
+  const handleMemberSelect = (member) => {
+    const memberPhone = member.phone_e164 || member.phone
+    router.push(`/messenger?phone=${encodeURIComponent(memberPhone)}&name=${encodeURIComponent(member.name)}&memberId=${member.id}`)
+  }
+
+  const filteredMembers = members.filter(member => 
+    member.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    member.phone?.includes(searchTerm) ||
+    member.phone_e164?.includes(searchTerm)
+  )
+
+  // If no parameters, show member selector
+  if (!phone || !name || !memberId) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-center">
-          <h2 className="text-2xl font-bold text-gray-900 mb-2">Invalid Request</h2>
-          <p className="text-gray-600">Missing phone or name parameter</p>
+      <div className="min-h-screen bg-gray-50 flex flex-col">
+        <div className="bg-white border-b border-gray-200">
+          <div className="max-w-4xl mx-auto px-4 py-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h1 className="text-xl font-semibold text-gray-900">Select a Member</h1>
+                <p className="text-sm text-gray-500">Choose who you want to message</p>
+              </div>
+              <button
+                onClick={() => router.back()}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+              >
+                ← Back
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-hidden">
+          <div className="max-w-4xl mx-auto px-4 py-6">
+            {/* Search */}
+            <div className="mb-4">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-5 w-5" />
+                <input
+                  type="text"
+                  placeholder="Search members by name or phone..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+            </div>
+
+            {/* Members List */}
+            {loadingMembers ? (
+              <div className="text-center py-12">
+                <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+                <p className="mt-2 text-gray-600">Loading members...</p>
+              </div>
+            ) : filteredMembers.length === 0 ? (
+              <div className="text-center py-12 bg-white rounded-lg shadow">
+                <p className="text-gray-500">No members found</p>
+              </div>
+            ) : (
+              <div className="bg-white shadow overflow-hidden sm:rounded-lg">
+                <ul className="divide-y divide-gray-200">
+                  {filteredMembers.map((member) => (
+                    <li key={member.id}>
+                      <button
+                        onClick={() => handleMemberSelect(member)}
+                        className="w-full text-left px-4 py-4 hover:bg-gray-50 transition-colors"
+                      >
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="text-sm font-medium text-gray-900">
+                              {member.name}
+                            </p>
+                            <p className="text-sm text-gray-500">
+                              {member.phone_e164 || member.phone}
+                            </p>
+                          </div>
+                          <div className="text-sm text-blue-600">
+                            Message →
+                          </div>
+                        </div>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     )
   }
 
+  // Show messenger interface if we have parameters
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
       <div className="bg-white border-b border-gray-200 sticky top-0 z-10">
