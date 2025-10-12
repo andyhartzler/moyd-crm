@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, Suspense } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
-import { Search } from 'lucide-react'
+import { Search, Paperclip, Image as ImageIcon, X } from 'lucide-react'
 
 const REACTIONS = [
   { type: 'love', emoji: '❤️', label: 'Love' },
@@ -28,16 +28,31 @@ function MessengerContent() {
   const [error, setError] = useState(null)
   const [replyingTo, setReplyingTo] = useState(null)
   const [showReactionPicker, setShowReactionPicker] = useState(null)
+  const [typingUsers, setTypingUsers] = useState(new Set())
   const messagesEndRef = useRef(null)
+  const messagesContainerRef = useRef(null)
   const pollIntervalRef = useRef(null)
+  const userScrolledUp = useRef(false)
 
   // Member selector state
   const [members, setMembers] = useState([])
   const [searchTerm, setSearchTerm] = useState('')
   const [loadingMembers, setLoadingMembers] = useState(false)
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  const scrollToBottom = (force = false) => {
+    if (force || !userScrolledUp.current) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
+  }
+
+  // Track if user scrolled up
+  const handleScroll = () => {
+    if (!messagesContainerRef.current) return
+    
+    const { scrollTop, scrollHeight, clientHeight } = messagesContainerRef.current
+    const isNearBottom = scrollHeight - scrollTop - clientHeight < 100
+    
+    userScrolledUp.current = !isNearBottom
   }
 
   // Load members if no phone/name/memberId provided
@@ -51,6 +66,8 @@ function MessengerContent() {
   useEffect(() => {
     if (memberId) {
       loadMessages()
+      scrollToBottom(true) // Force scroll on initial load
+      
       pollIntervalRef.current = setInterval(loadMessages, 2000)
       
       return () => {
@@ -61,6 +78,7 @@ function MessengerContent() {
     }
   }, [memberId])
 
+  // Only auto-scroll if user hasn't scrolled up
   useEffect(() => {
     scrollToBottom()
   }, [messages])
@@ -156,6 +174,7 @@ function MessengerContent() {
       await loadMessages()
       setMessage('')
       setReplyingTo(null)
+      scrollToBottom(true) // Force scroll after sending
     } catch (err) {
       setError(err.message)
       console.error('Error sending message:', err)
@@ -222,6 +241,11 @@ function MessengerContent() {
     member.phone?.includes(searchTerm) ||
     member.phone_e164?.includes(searchTerm)
   )
+
+  // Check if message has attachments
+  const hasAttachments = (msg) => {
+    return msg.body === '\ufffc' || msg.body?.includes('\ufffc')
+  }
 
   // If no parameters, show member selector
   if (!phone || !name || !memberId) {
@@ -306,163 +330,210 @@ function MessengerContent() {
 
   // Show messenger interface if we have parameters
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col">
-      <div className="bg-white border-b border-gray-200 sticky top-0 z-10">
-        <div className="max-w-4xl mx-auto px-4 py-4">
+    <div className="min-h-screen bg-gray-100 flex flex-col">
+      {/* Header - More compact like iMessage */}
+      <div className="bg-white border-b border-gray-200 sticky top-0 z-10 shadow-sm">
+        <div className="max-w-4xl mx-auto px-4 py-3">
           <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-xl font-semibold text-gray-900">{name}</h1>
-              <p className="text-sm text-gray-500">{phone}</p>
+            <div className="flex items-center space-x-3">
+              <button
+                onClick={() => window.history.back()}
+                className="text-blue-600 hover:text-blue-700 text-sm font-medium"
+              >
+                ← Back
+              </button>
+              <div>
+                <h1 className="text-base font-semibold text-gray-900">{name}</h1>
+                <p className="text-xs text-gray-500">{phone}</p>
+              </div>
             </div>
-            <button
-              onClick={() => window.history.back()}
-              className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
-            >
-              ← Back
-            </button>
           </div>
         </div>
       </div>
 
-      <div className="flex-1 overflow-hidden">
-        <div className="max-w-4xl mx-auto px-4 py-6 h-full flex flex-col">
-          <div className="flex-1 overflow-y-auto space-y-4 mb-4">
-            {messages.length === 0 ? (
-              <div className="text-center text-gray-500 py-8">
-                No messages yet. Start the conversation!
-              </div>
-            ) : (
-              messages.map((msg, index) => {
-                if (msg.associated_message_guid && msg.associated_message_type >= 2000) {
-                  return null
-                }
+      {/* Messages Area */}
+      <div 
+        ref={messagesContainerRef}
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto px-4 py-4"
+        style={{ maxHeight: 'calc(100vh - 180px)' }}
+      >
+        <div className="max-w-4xl mx-auto space-y-2">
+          {messages.length === 0 ? (
+            <div className="text-center text-gray-500 py-8">
+              <p className="text-sm">No messages yet</p>
+              <p className="text-xs text-gray-400 mt-1">Start the conversation!</p>
+            </div>
+          ) : (
+            messages.map((msg, index) => {
+              if (msg.associated_message_guid && msg.associated_message_type >= 2000) {
+                return null
+              }
 
-                const isOutbound = msg.direction === 'outbound'
-                const repliedMessage = msg.thread_originator_guid 
-                  ? findMessageByGuid(msg.thread_originator_guid) 
-                  : null
+              const isOutbound = msg.direction === 'outbound'
+              const repliedMessage = msg.thread_originator_guid 
+                ? findMessageByGuid(msg.thread_originator_guid) 
+                : null
+              const showAvatar = index === 0 || messages[index - 1]?.direction !== msg.direction
 
-                return (
-                  <div
-                    key={msg.guid || index}
-                    className={`flex ${isOutbound ? 'justify-end' : 'justify-start'}`}
-                  >
-                    <div className={`max-w-xs lg:max-w-md relative group`}>
-                      {repliedMessage && (
-                        <div className={`text-xs text-gray-500 mb-1 px-3 py-1 bg-gray-100 rounded-t-lg border-l-2 ${
-                          isOutbound ? 'border-blue-500' : 'border-gray-400'
-                        }`}>
-                          <div className="font-medium">
-                            {repliedMessage.direction === 'outbound' ? 'You' : name}
-                          </div>
-                          <div className="truncate">{repliedMessage.body}</div>
+              return (
+                <div
+                  key={msg.guid || index}
+                  className={`flex ${isOutbound ? 'justify-end' : 'justify-start'} group`}
+                >
+                  <div className={`max-w-xs lg:max-w-md relative ${!isOutbound && showAvatar ? 'ml-8' : ''}`}>
+                    {/* Reply Preview - Improved */}
+                    {repliedMessage && (
+                      <div className={`text-xs mb-1 px-3 py-1.5 rounded-lg ${
+                        isOutbound 
+                          ? 'bg-blue-100 border-l-2 border-blue-500' 
+                          : 'bg-gray-200 border-l-2 border-gray-400'
+                      }`}>
+                        <div className="font-medium text-gray-700">
+                          {repliedMessage.direction === 'outbound' ? 'You' : name}
                         </div>
-                      )}
+                        <div className="truncate text-gray-600">
+                          {hasAttachments(repliedMessage) ? '📎 Attachment' : repliedMessage.body}
+                        </div>
+                      </div>
+                    )}
 
-                      <div
-                        className={`px-4 py-2 ${repliedMessage ? 'rounded-b-lg rounded-tr-lg' : 'rounded-lg'} ${
-                          isOutbound
-                            ? 'bg-blue-500 text-white'
-                            : 'bg-gray-200 text-gray-900'
-                        }`}
-                      >
-                        <p className="text-sm break-words">{msg.body}</p>
-                        <div className="flex items-center justify-between mt-1">
-                          <p className={`text-xs ${
-                            isOutbound ? 'text-blue-100' : 'text-gray-500'
-                          }`}>
-                            {new Date(msg.created_at).toLocaleTimeString([], {
-                              hour: 'numeric',
-                              minute: '2-digit'
-                            })}
+                    {/* Message Bubble */}
+                    <div
+                      className={`px-3 py-2 ${
+                        isOutbound
+                          ? 'bg-blue-500 text-white rounded-2xl rounded-tr-sm'
+                          : 'bg-white text-gray-900 rounded-2xl rounded-tl-sm shadow-sm'
+                      }`}
+                    >
+                      {hasAttachments(msg) ? (
+                        <div className="space-y-1">
+                          <div className="text-sm">📎 Attachment</div>
+                          <p className="text-xs opacity-75">
+                            (Image/video viewing coming soon)
                           </p>
-                          {getStatusIcon(msg)}
                         </div>
-                      </div>
-
-                      {msg.reactions && msg.reactions.length > 0 && (
-                        <div className={`flex gap-1 mt-1 ${isOutbound ? 'justify-end' : 'justify-start'}`}>
-                          {msg.reactions.map((reaction, idx) => (
-                            <span
-                              key={idx}
-                              className="inline-block px-2 py-1 bg-white border border-gray-200 rounded-full text-sm shadow-sm"
-                            >
-                              {getReactionEmoji(reaction.type)}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-
-                      <div className={`absolute top-0 ${isOutbound ? 'left-0 -translate-x-full' : 'right-0 translate-x-full'} opacity-0 group-hover:opacity-100 transition-opacity flex gap-1 px-2`}>
-                        <button
-                          onClick={() => setReplyingTo(msg)}
-                          className="p-1 bg-white rounded-full shadow hover:bg-gray-100 text-xs"
-                          title="Reply"
-                        >
-                          ↩️
-                        </button>
-                        <button
-                          onClick={() => setShowReactionPicker(showReactionPicker === msg.guid ? null : msg.guid)}
-                          className="p-1 bg-white rounded-full shadow hover:bg-gray-100 text-xs"
-                          title="React"
-                        >
-                          ❤️
-                        </button>
-                      </div>
-
-                      {showReactionPicker === msg.guid && (
-                        <div className={`absolute ${isOutbound ? 'left-0' : 'right-0'} mt-2 p-2 bg-white rounded-lg shadow-lg border border-gray-200 flex gap-2 z-10`}>
-                          {REACTIONS.map(reaction => (
-                            <button
-                              key={reaction.type}
-                              onClick={() => handleReaction(msg.guid, reaction.type)}
-                              className="text-2xl hover:scale-125 transition-transform"
-                              title={reaction.label}
-                            >
-                              {reaction.emoji}
-                            </button>
-                          ))}
-                        </div>
+                      ) : (
+                        <p className="text-sm break-words">{msg.body}</p>
                       )}
                     </div>
-                  </div>
-                )
-              })
-            )}
-            <div ref={messagesEndRef} />
-          </div>
 
+                    {/* Timestamp and Status - Compact */}
+                    <div className={`flex items-center mt-0.5 px-1 ${isOutbound ? 'justify-end' : 'justify-start'}`}>
+                      <p className="text-xs text-gray-500">
+                        {new Date(msg.created_at).toLocaleTimeString([], {
+                          hour: 'numeric',
+                          minute: '2-digit'
+                        })}
+                      </p>
+                      {getStatusIcon(msg)}
+                    </div>
+
+                    {/* Reactions */}
+                    {msg.reactions && msg.reactions.length > 0 && (
+                      <div className={`flex gap-1 mt-1 ${isOutbound ? 'justify-end' : 'justify-start'}`}>
+                        {msg.reactions.map((reaction, idx) => (
+                          <span
+                            key={idx}
+                            className="inline-block px-1.5 py-0.5 bg-white border border-gray-200 rounded-full text-xs shadow-sm"
+                          >
+                            {getReactionEmoji(reaction.type)}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Hover Actions */}
+                    <div className={`absolute top-0 ${isOutbound ? 'left-0 -translate-x-full' : 'right-0 translate-x-full'} opacity-0 group-hover:opacity-100 transition-opacity flex gap-1 px-2`}>
+                      <button
+                        onClick={() => setReplyingTo(msg)}
+                        className="p-1.5 bg-white rounded-full shadow-md hover:bg-gray-100 text-sm border border-gray-200"
+                        title="Reply"
+                      >
+                        ↩️
+                      </button>
+                      <button
+                        onClick={() => setShowReactionPicker(showReactionPicker === msg.guid ? null : msg.guid)}
+                        className="p-1.5 bg-white rounded-full shadow-md hover:bg-gray-100 text-sm border border-gray-200"
+                        title="React"
+                      >
+                        ❤️
+                      </button>
+                    </div>
+
+                    {/* Reaction Picker - Fixed positioning */}
+                    {showReactionPicker === msg.guid && (
+                      <div 
+                        className={`absolute ${isOutbound ? 'right-0' : 'left-0'} mt-2 p-2 bg-white rounded-xl shadow-xl border border-gray-200 flex gap-2 z-50`}
+                        style={{ minWidth: '280px' }}
+                      >
+                        {REACTIONS.map(reaction => (
+                          <button
+                            key={reaction.type}
+                            onClick={() => handleReaction(msg.guid, reaction.type)}
+                            className="text-2xl hover:scale-125 transition-transform p-1"
+                            title={reaction.label}
+                          >
+                            {reaction.emoji}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )
+            })
+          )}
+          <div ref={messagesEndRef} />
+        </div>
+      </div>
+
+      {/* Input Area */}
+      <div className="bg-white border-t border-gray-200 sticky bottom-0">
+        <div className="max-w-4xl mx-auto px-4 py-3">
+          {/* Error Display */}
           {error && (
-            <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg">
-              <p className="text-sm text-red-800">{error}</p>
+            <div className="mb-2 p-2 bg-red-50 border border-red-200 rounded-lg">
+              <p className="text-xs text-red-800">{error}</p>
             </div>
           )}
 
+          {/* Reply Preview */}
           {replyingTo && (
-            <div className="mb-2 p-3 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between">
-              <div className="flex-1">
+            <div className="mb-2 p-2 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between">
+              <div className="flex-1 min-w-0">
                 <p className="text-xs text-blue-600 font-medium">
                   Replying to {replyingTo.direction === 'outbound' ? 'yourself' : name}
                 </p>
-                <p className="text-sm text-gray-700 truncate">{replyingTo.body}</p>
+                <p className="text-xs text-gray-700 truncate">
+                  {hasAttachments(replyingTo) ? '📎 Attachment' : replyingTo.body}
+                </p>
               </div>
               <button
                 onClick={() => setReplyingTo(null)}
                 className="ml-2 text-blue-600 hover:text-blue-800"
               >
-                ✕
+                <X className="h-4 w-4" />
               </button>
             </div>
           )}
 
-          <form onSubmit={handleSendMessage} className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
-            <div className="flex gap-2">
-              <textarea
+          {/* Input Form */}
+          <form onSubmit={handleSendMessage} className="flex items-end gap-2">
+            <button
+              type="button"
+              className="p-2 text-gray-400 hover:text-gray-600 transition-colors"
+              title="Attach file (coming soon)"
+            >
+              <Paperclip className="h-5 w-5" />
+            </button>
+            <div className="flex-1 bg-gray-100 rounded-full px-4 py-2 flex items-center">
+              <input
+                type="text"
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
-                placeholder={replyingTo ? "Type your reply..." : "Type your message..."}
-                className="flex-1 resize-none rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm text-gray-900 placeholder-gray-400"
-                rows={3}
+                placeholder={replyingTo ? "Reply..." : "iMessage"}
+                className="flex-1 bg-transparent border-none focus:outline-none text-sm text-gray-900 placeholder-gray-500"
                 disabled={loading}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
@@ -471,17 +542,16 @@ function MessengerContent() {
                   }
                 }}
               />
-              <button
-                type="submit"
-                disabled={loading || (!message.trim() && !replyingTo)}
-                className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed font-medium self-end"
-              >
-                {loading ? 'Sending...' : 'Send'}
-              </button>
             </div>
-            <p className="text-xs text-gray-500 mt-2">
-              Press Enter to send • Shift+Enter for new line • Hover messages to reply/react
-            </p>
+            <button
+              type="submit"
+              disabled={loading || (!message.trim() && !replyingTo)}
+              className="p-2 bg-blue-500 text-white rounded-full hover:bg-blue-600 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+            >
+              <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 20 20">
+                <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
+              </svg>
+            </button>
           </form>
         </div>
       </div>

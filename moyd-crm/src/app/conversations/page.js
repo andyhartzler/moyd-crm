@@ -3,23 +3,26 @@
 import { useEffect, useState } from 'react'
 import Navigation from '@/components/Navigation'
 import { supabase } from '@/lib/supabase'
-import { format } from 'date-fns'
-import { MessageSquare, User, Clock, Filter } from 'lucide-react'
+import { format, isToday, isYesterday } from 'date-fns'
+import { MessageSquare, Search } from 'lucide-react'
 import Link from 'next/link'
 
 export default function ConversationsPage() {
   const [conversations, setConversations] = useState([])
   const [loading, setLoading] = useState(true)
-  const [statusFilter, setStatusFilter] = useState('all')
+  const [searchTerm, setSearchTerm] = useState('')
 
   useEffect(() => {
     loadConversations()
-  }, [statusFilter])
+    
+    // Poll for updates every 3 seconds
+    const interval = setInterval(loadConversations, 3000)
+    return () => clearInterval(interval)
+  }, [])
 
   async function loadConversations() {
-    setLoading(true)
     try {
-      let query = supabase
+      const { data, error } = await supabase
         .from('conversations')
         .select(`
           *,
@@ -28,17 +31,10 @@ export default function ConversationsPage() {
         `)
         .order('last_message_at', { ascending: false, nullsFirst: false })
 
-      if (statusFilter !== 'all') {
-        query = query.eq('status', statusFilter)
-      }
-
-      const { data, error } = await query
-
       if (error) throw error
 
-      // Process conversations to add unread count
+      // Process conversations
       const processedConversations = data.map(conv => {
-        // Handle if member is returned as JSON string
         let member = conv.member
         if (typeof member === 'string') {
           try {
@@ -48,13 +44,19 @@ export default function ConversationsPage() {
           }
         }
 
+        // Get last message
+        const sortedMessages = (conv.messages || []).sort(
+          (a, b) => new Date(b.created_at) - new Date(a.created_at)
+        )
+        const lastMessage = sortedMessages[0]
+
         return {
           ...conv,
           member,
           unreadCount: conv.messages?.filter(
             m => m.direction === 'inbound' && !m.is_read
           ).length || 0,
-          lastMessage: conv.messages?.[conv.messages.length - 1]
+          lastMessage
         }
       })
 
@@ -66,34 +68,49 @@ export default function ConversationsPage() {
     }
   }
 
+  const formatTime = (dateString) => {
+    if (!dateString) return ''
+    const date = new Date(dateString)
+    
+    if (isToday(date)) {
+      return format(date, 'h:mm a')
+    } else if (isYesterday(date)) {
+      return 'Yesterday'
+    } else {
+      return format(date, 'M/d/yy')
+    }
+  }
+
+  const filteredConversations = conversations.filter(conv => {
+    const member = conv.member
+    const name = member?.name?.toLowerCase() || ''
+    const phone = member?.phone?.toLowerCase() || ''
+    const search = searchTerm.toLowerCase()
+    
+    return name.includes(search) || phone.includes(search)
+  })
+
   return (
     <div className="min-h-screen bg-gray-50">
       <Navigation />
       
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div className="max-w-4xl mx-auto">
         {/* Header */}
-        <div className="mb-6 flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-bold text-gray-900">Conversations</h1>
-            <p className="mt-1 text-sm text-gray-600">
-              Manage all your member conversations
-            </p>
-          </div>
-          
-          {/* Status Filter */}
-          <div className="flex items-center space-x-2">
-            <Filter className="h-5 w-5 text-gray-400" />
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              className="rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
-            >
-              <option value="all">All Status</option>
-              <option value="active">Active</option>
-              <option value="waiting">Waiting</option>
-              <option value="resolved">Resolved</option>
-              <option value="archived">Archived</option>
-            </select>
+        <div className="bg-white border-b border-gray-200 sticky top-0 z-10">
+          <div className="px-4 py-4">
+            <h1 className="text-2xl font-bold text-gray-900 mb-3">Messages</h1>
+            
+            {/* Search */}
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
+              <input
+                type="text"
+                placeholder="Search"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full pl-10 pr-4 py-2 bg-gray-100 border-none rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+              />
+            </div>
           </div>
         </div>
 
@@ -101,106 +118,96 @@ export default function ConversationsPage() {
         {loading ? (
           <div className="text-center py-12">
             <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-            <p className="mt-2 text-gray-600">Loading conversations...</p>
+            <p className="mt-2 text-sm text-gray-600">Loading conversations...</p>
           </div>
-        ) : conversations.length === 0 ? (
-          <div className="text-center py-12 bg-white rounded-lg shadow">
-            <MessageSquare className="mx-auto h-12 w-12 text-gray-400" />
-            <h3 className="mt-2 text-sm font-medium text-gray-900">No conversations</h3>
+        ) : filteredConversations.length === 0 ? (
+          <div className="text-center py-12 bg-white">
+            <MessageSquare className="mx-auto h-12 w-12 text-gray-300" />
+            <h3 className="mt-4 text-base font-medium text-gray-900">No conversations</h3>
             <p className="mt-1 text-sm text-gray-500">
-              {statusFilter === 'all' 
-                ? 'Get started by sending a message to a member'
-                : `No ${statusFilter} conversations found`}
+              {searchTerm ? 'No results found' : 'Start messaging a member'}
             </p>
-            <div className="mt-6">
-              <Link
-                href="/members"
-                className="inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700"
-              >
-                <MessageSquare className="mr-2 h-5 w-5" />
-                Go to Members
-              </Link>
-            </div>
+            {!searchTerm && (
+              <div className="mt-6">
+                <Link
+                  href="/messenger"
+                  className="inline-flex items-center px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
+                >
+                  <MessageSquare className="mr-2 h-4 w-4" />
+                  New Message
+                </Link>
+              </div>
+            )}
           </div>
         ) : (
-          <div className="bg-white shadow overflow-hidden sm:rounded-lg">
-            <ul className="divide-y divide-gray-200">
-              {conversations.map((conversation) => {
-                const member = conversation.member
-                const memberName = member?.name || 'Unknown Member'
-                const memberPhone = member?.phone_e164 || member?.phone || 'No phone'
-                const memberCounty = member?.county
-                const memberId = member?.id
+          <div className="bg-white divide-y divide-gray-100">
+            {filteredConversations.map((conversation) => {
+              const member = conversation.member
+              const memberName = member?.name || 'Unknown'
+              const memberPhone = member?.phone_e164 || member?.phone || ''
+              const memberId = member?.id
 
-                return (
-                  <li key={conversation.id}>
-                    <Link
-                      href={`/messenger?phone=${encodeURIComponent(memberPhone)}&name=${encodeURIComponent(memberName)}&memberId=${memberId}`}
-                      className="block hover:bg-gray-50 transition-colors"
-                    >
-                      <div className="px-4 py-4 sm:px-6">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center min-w-0 flex-1">
-                            <div className="flex-shrink-0">
-                              <div className="h-10 w-10 rounded-full bg-blue-100 flex items-center justify-center">
-                                <User className="h-6 w-6 text-blue-600" />
-                              </div>
-                            </div>
-                            <div className="ml-4 flex-1 min-w-0">
-                              <div className="flex items-center justify-between">
-                                <p className="text-sm font-medium text-gray-900 truncate">
-                                  {memberName}
-                                </p>
-                                {conversation.unreadCount > 0 && (
-                                  <span className="ml-2 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                                    {conversation.unreadCount} new
-                                  </span>
-                                )}
-                              </div>
-                              <div className="mt-1 flex items-center text-sm text-gray-500">
-                                <span className="truncate">
-                                  {memberPhone}
-                                </span>
-                                {memberCounty && (
-                                  <>
-                                    <span className="mx-2">•</span>
-                                    <span>{memberCounty}</span>
-                                  </>
-                                )}
-                              </div>
-                              {conversation.lastMessage && (
-                                <p className="mt-1 text-sm text-gray-600 truncate">
-                                  {conversation.lastMessage.direction === 'outbound' && 'You: '}
-                                  {conversation.lastMessage.body}
-                                </p>
-                              )}
-                            </div>
-                          </div>
-                          <div className="ml-4 flex-shrink-0 flex items-center space-x-4">
-                            <div className="text-right">
-                              <div className="flex items-center text-sm text-gray-500">
-                                <Clock className="mr-1 h-4 w-4" />
-                                {conversation.last_message_at
-                                  ? format(new Date(conversation.last_message_at), 'MMM d, h:mm a')
-                                  : 'No messages'}
-                              </div>
-                              <span className={`mt-1 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                                conversation.status === 'active' ? 'bg-green-100 text-green-800' :
-                                conversation.status === 'waiting' ? 'bg-yellow-100 text-yellow-800' :
-                                conversation.status === 'resolved' ? 'bg-gray-100 text-gray-800' :
-                                'bg-gray-100 text-gray-600'
-                              }`}>
-                                {conversation.status || 'unknown'}
-                              </span>
-                            </div>
-                          </div>
+              const hasAttachment = conversation.lastMessage?.body === '\ufffc' || 
+                                   conversation.lastMessage?.body?.includes('\ufffc')
+
+              return (
+                <Link
+                  key={conversation.id}
+                  href={`/messenger?phone=${encodeURIComponent(memberPhone)}&name=${encodeURIComponent(memberName)}&memberId=${memberId}`}
+                  className="block hover:bg-gray-50 transition-colors active:bg-gray-100"
+                >
+                  <div className="px-4 py-3">
+                    <div className="flex items-start space-x-3">
+                      {/* Avatar */}
+                      <div className="flex-shrink-0">
+                        <div className="h-12 w-12 rounded-full bg-gradient-to-br from-blue-400 to-blue-600 flex items-center justify-center text-white font-semibold text-lg">
+                          {memberName.charAt(0).toUpperCase()}
                         </div>
                       </div>
-                    </Link>
-                  </li>
-                )
-              })}
-            </ul>
+
+                      {/* Content */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-baseline justify-between mb-1">
+                          <h3 className={`text-sm font-semibold truncate ${
+                            conversation.unreadCount > 0 ? 'text-gray-900' : 'text-gray-700'
+                          }`}>
+                            {memberName}
+                          </h3>
+                          <span className="text-xs text-gray-500 ml-2 flex-shrink-0">
+                            {formatTime(conversation.last_message_at)}
+                          </span>
+                        </div>
+                        
+                        <div className="flex items-center justify-between">
+                          <p className={`text-sm truncate ${
+                            conversation.unreadCount > 0 ? 'font-medium text-gray-900' : 'text-gray-500'
+                          }`}>
+                            {conversation.lastMessage ? (
+                              <>
+                                {conversation.lastMessage.direction === 'outbound' && (
+                                  <span className="text-gray-400">You: </span>
+                                )}
+                                {hasAttachment ? '📎 Attachment' : conversation.lastMessage.body}
+                              </>
+                            ) : (
+                              <span className="text-gray-400 italic">No messages yet</span>
+                            )}
+                          </p>
+                          
+                          {conversation.unreadCount > 0 && (
+                            <div className="ml-2 flex-shrink-0">
+                              <span className="inline-flex items-center justify-center h-5 w-5 rounded-full bg-blue-600 text-white text-xs font-bold">
+                                {conversation.unreadCount}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </Link>
+              )
+            })}
           </div>
         )}
       </div>
