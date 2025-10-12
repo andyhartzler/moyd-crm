@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 
 const REACTIONS = [
@@ -12,7 +12,8 @@ const REACTIONS = [
   { type: 'question', emoji: '❓', label: 'Question' }
 ]
 
-export default function MessengerPage() {
+// Separate component that uses useSearchParams
+function MessengerContent() {
   const searchParams = useSearchParams()
   const phone = searchParams.get('phone')
   const name = searchParams.get('name')
@@ -27,16 +28,13 @@ export default function MessengerPage() {
   const messagesEndRef = useRef(null)
   const pollIntervalRef = useRef(null)
 
-  // Auto-scroll to bottom
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }
 
-  // Load messages
   useEffect(() => {
     if (memberId) {
       loadMessages()
-      // Poll for new messages every 2 seconds
       pollIntervalRef.current = setInterval(loadMessages, 2000)
       
       return () => {
@@ -56,7 +54,6 @@ export default function MessengerPage() {
       const response = await fetch(`/api/messages?memberId=${memberId}`)
       if (response.ok) {
         const data = await response.json()
-        // Group messages with their reactions
         const processedMessages = processMessages(data.messages || [])
         setMessages(processedMessages)
       }
@@ -65,15 +62,12 @@ export default function MessengerPage() {
     }
   }
 
-  // Process messages to group reactions with their parent messages
   const processMessages = (rawMessages) => {
     const messageMap = {}
     const processedMessages = []
 
-    // First pass: organize all messages
     rawMessages.forEach(msg => {
       if (msg.associated_message_guid && msg.associated_message_type >= 2000) {
-        // This is a reaction
         if (!messageMap[msg.associated_message_guid]) {
           messageMap[msg.associated_message_guid] = { reactions: [] }
         }
@@ -83,7 +77,6 @@ export default function MessengerPage() {
           created_at: msg.created_at
         })
       } else {
-        // Regular message or reply
         messageMap[msg.guid] = {
           ...msg,
           reactions: messageMap[msg.guid]?.reactions || []
@@ -126,7 +119,6 @@ export default function MessengerPage() {
         throw new Error(data.error || 'Failed to send message')
       }
 
-      // Reload messages to show the new one
       await loadMessages()
       setMessage('')
       setReplyingTo(null)
@@ -164,7 +156,7 @@ export default function MessengerPage() {
   const getReactionEmoji = (type) => {
     const reactionMap = {
       2000: '❤️', 2001: '👍', 2002: '👎', 2003: '😂', 2004: '‼️', 2005: '❓',
-      3000: '', 3001: '', 3002: '', 3003: '', 3004: '', 3005: '' // Removed reactions
+      3000: '', 3001: '', 3002: '', 3003: '', 3004: '', 3005: ''
     }
     return reactionMap[type] || ''
   }
@@ -199,7 +191,6 @@ export default function MessengerPage() {
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
-      {/* Header */}
       <div className="bg-white border-b border-gray-200 sticky top-0 z-10">
         <div className="max-w-4xl mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
@@ -217,7 +208,6 @@ export default function MessengerPage() {
         </div>
       </div>
 
-      {/* Messages Container */}
       <div className="flex-1 overflow-hidden">
         <div className="max-w-4xl mx-auto px-4 py-6 h-full flex flex-col">
           <div className="flex-1 overflow-y-auto space-y-4 mb-4">
@@ -227,7 +217,6 @@ export default function MessengerPage() {
               </div>
             ) : (
               messages.map((msg, index) => {
-                // Skip reaction messages (they're displayed on the parent)
                 if (msg.associated_message_guid && msg.associated_message_type >= 2000) {
                   return null
                 }
@@ -243,7 +232,6 @@ export default function MessengerPage() {
                     className={`flex ${isOutbound ? 'justify-end' : 'justify-start'}`}
                   >
                     <div className={`max-w-xs lg:max-w-md relative group`}>
-                      {/* Reply Preview */}
                       {repliedMessage && (
                         <div className={`text-xs text-gray-500 mb-1 px-3 py-1 bg-gray-100 rounded-t-lg border-l-2 ${
                           isOutbound ? 'border-blue-500' : 'border-gray-400'
@@ -255,7 +243,6 @@ export default function MessengerPage() {
                         </div>
                       )}
 
-                      {/* Message Bubble */}
                       <div
                         className={`px-4 py-2 ${repliedMessage ? 'rounded-b-lg rounded-tr-lg' : 'rounded-lg'} ${
                           isOutbound
@@ -277,7 +264,6 @@ export default function MessengerPage() {
                         </div>
                       </div>
 
-                      {/* Reactions */}
                       {msg.reactions && msg.reactions.length > 0 && (
                         <div className={`flex gap-1 mt-1 ${isOutbound ? 'justify-end' : 'justify-start'}`}>
                           {msg.reactions.map((reaction, idx) => (
@@ -291,9 +277,7 @@ export default function MessengerPage() {
                         </div>
                       )}
 
-                      {/* Action Buttons (shown on hover) */}
                       <div className={`absolute top-0 ${isOutbound ? 'left-0 -translate-x-full' : 'right-0 translate-x-full'} opacity-0 group-hover:opacity-100 transition-opacity flex gap-1 px-2`}>
-                        {/* Reply Button */}
                         <button
                           onClick={() => setReplyingTo(msg)}
                           className="p-1 bg-white rounded-full shadow hover:bg-gray-100 text-xs"
@@ -301,7 +285,6 @@ export default function MessengerPage() {
                         >
                           ↩️
                         </button>
-                        {/* React Button */}
                         <button
                           onClick={() => setShowReactionPicker(showReactionPicker === msg.guid ? null : msg.guid)}
                           className="p-1 bg-white rounded-full shadow hover:bg-gray-100 text-xs"
@@ -311,7 +294,6 @@ export default function MessengerPage() {
                         </button>
                       </div>
 
-                      {/* Reaction Picker */}
                       {showReactionPicker === msg.guid && (
                         <div className={`absolute ${isOutbound ? 'left-0' : 'right-0'} mt-2 p-2 bg-white rounded-lg shadow-lg border border-gray-200 flex gap-2 z-10`}>
                           {REACTIONS.map(reaction => (
@@ -334,14 +316,12 @@ export default function MessengerPage() {
             <div ref={messagesEndRef} />
           </div>
 
-          {/* Error Display */}
           {error && (
             <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg">
               <p className="text-sm text-red-800">{error}</p>
             </div>
           )}
 
-          {/* Reply Preview */}
           {replyingTo && (
             <div className="mb-2 p-3 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between">
               <div className="flex-1">
@@ -359,7 +339,6 @@ export default function MessengerPage() {
             </div>
           )}
 
-          {/* Message Input Form */}
           <form onSubmit={handleSendMessage} className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
             <div className="flex gap-2">
               <textarea
@@ -391,5 +370,20 @@ export default function MessengerPage() {
         </div>
       </div>
     </div>
+  )
+}
+
+// Main export wrapped in Suspense
+export default function MessengerPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <p className="text-gray-600">Loading messenger...</p>
+        </div>
+      </div>
+    }>
+      <MessengerContent />
+    </Suspense>
   )
 }
