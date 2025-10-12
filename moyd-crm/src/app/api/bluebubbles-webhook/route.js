@@ -122,9 +122,6 @@ async function handleNewMessage(data) {
       return
     }
 
-    // Determine if it's a reaction
-    const isReaction = message.associatedMessageGuid !== null
-
     // Create the message
     const { error: msgError } = await supabase
       .from('messages')
