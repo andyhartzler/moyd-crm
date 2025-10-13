@@ -5,6 +5,8 @@ const BB_PASSWORD = process.env.NEXT_PUBLIC_BLUEBUBBLES_PASSWORD
 
 // Maximum file size: ~7.5MB (BlueBubbles/iMessage limit)
 const MAX_FILE_SIZE = 7.5 * 1024 * 1024
+// BlueBubbles request timeout: 45 seconds (before Cloudflare's 100s timeout)
+const BLUEBUBBLES_TIMEOUT = 45000
 
 export async function POST(request) {
   try {
@@ -48,14 +50,14 @@ export async function POST(request) {
 
     const chatGuid = phone.includes(';') ? phone : `iMessage;-;${phone}`
 
-    console.log('📤 Sending attachment via multipart/form-data...')
+    console.log('📤 Sending attachment to BlueBubbles...')
     
     const fileBuffer = await file.arrayBuffer()
     const blob = new Blob([fileBuffer], { type: file.type })
     
     const attachmentFormData = new FormData()
     attachmentFormData.append('chatGuid', chatGuid)
-    attachmentFormData.append('name', file.name)  // Required field
+    attachmentFormData.append('name', file.name)
     attachmentFormData.append('attachment', blob, file.name)
     attachmentFormData.append('method', 'private-api')
     
@@ -68,17 +70,48 @@ export async function POST(request) {
       attachmentFormData.append('partIndex', partIndex)
     }
 
-    const response = await fetch(
-      `${BB_HOST}/api/v1/message/attachment?password=${BB_PASSWORD}`,
-      {
-        method: 'POST',
-        body: attachmentFormData,
+    // Create abort controller with timeout
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => {
+      console.error('⏱️ BlueBubbles request timeout after 45 seconds')
+      controller.abort()
+    }, BLUEBUBBLES_TIMEOUT)
+
+    let response
+    try {
+      console.log(`🔗 Fetching: ${BB_HOST}/api/v1/message/attachment`)
+      response = await fetch(
+        `${BB_HOST}/api/v1/message/attachment?password=${BB_PASSWORD}`,
+        {
+          method: 'POST',
+          body: attachmentFormData,
+          signal: controller.signal,
+        }
+      )
+      clearTimeout(timeoutId)
+      console.log('✅ Got response from BlueBubbles:', response.status)
+    } catch (fetchError) {
+      clearTimeout(timeoutId)
+      console.error('❌ Fetch error:', fetchError.name, fetchError.message)
+      
+      if (fetchError.name === 'AbortError') {
+        return NextResponse.json(
+          { 
+            error: 'BlueBubbles server took too long to respond. The attachment may still be sent - check your messages.',
+            timeout: true
+          },
+          { status: 408 }
+        )
       }
-    )
+      
+      return NextResponse.json(
+        { error: `Failed to connect to BlueBubbles: ${fetchError.message}` },
+        { status: 503 }
+      )
+    }
 
     const responseText = await response.text()
-    console.log('BlueBubbles response status:', response.status)
-    console.log('BlueBubbles response:', responseText.substring(0, 500))
+    console.log('📥 BlueBubbles response:', responseText.substring(0, 300))
 
     if (!response.ok) {
       let errorMessage = 'Failed to send attachment'
@@ -101,7 +134,7 @@ export async function POST(request) {
     try {
       result = JSON.parse(responseText)
     } catch (e) {
-      console.error('Failed to parse response JSON:', e)
+      console.error('❌ Failed to parse response JSON:', e)
       return NextResponse.json(
         { error: 'Invalid response from BlueBubbles server' },
         { status: 500 }
@@ -110,17 +143,13 @@ export async function POST(request) {
 
     console.log('✅ Attachment sent successfully!')
 
-    // ⚠️ DON'T save to database here - let the webhook handle it
-    // The webhook will receive the sent message and save it properly
-    // This prevents timeout issues
-
     return NextResponse.json({
       success: true,
       data: result.data,
       message: 'Attachment sent successfully'
     })
   } catch (error) {
-    console.error('Error in send-attachment API:', error)
+    console.error('💥 Unexpected error in send-attachment API:', error)
     return NextResponse.json(
       { error: error.message || 'Internal server error' },
       { status: 500 }
