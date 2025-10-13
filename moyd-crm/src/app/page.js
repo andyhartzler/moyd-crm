@@ -144,7 +144,9 @@ export default function Home() {
       // Congressional District
       const district = parseField(member.congressional_district || member.district)
       if (district) {
-        const districtName = `CD-${district}`
+        const districtName = district && district.toString().startsWith('CD-') 
+  ? district 
+  : `CD-${district}`
         newStats.byDistrict[districtName] = (newStats.byDistrict[districtName] || 0) + 1
       }
 
