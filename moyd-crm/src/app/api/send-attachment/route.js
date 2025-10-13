@@ -59,6 +59,7 @@ export async function POST(request) {
     
     const attachmentFormData = new FormData()
     attachmentFormData.append('chatGuid', chatGuid)
+    attachmentFormData.append('name', file.name)  // ⚠️ CRITICAL: BlueBubbles requires this field
     attachmentFormData.append('attachment', blob, file.name)
     attachmentFormData.append('method', 'private-api')
     
@@ -115,16 +116,17 @@ export async function POST(request) {
     console.log('✅ Attachment sent successfully!')
 
     // Save to database
-    await saveAttachmentToDatabase(memberId, chatGuid, phone, result, file.name, message)
+    if (memberId) {
+      await saveAttachmentToDatabase(memberId, chatGuid, phone, result, message, replyToGuid)
+    }
 
     return NextResponse.json({
       success: true,
-      message: 'Attachment sent successfully',
-      data: result.data
+      data: result.data,
+      message: 'Attachment sent successfully'
     })
-
   } catch (error) {
-    console.error('❌ Send attachment error:', error)
+    console.error('Error in send-attachment API:', error)
     return NextResponse.json(
       { error: error.message || 'Internal server error' },
       { status: 500 }
@@ -132,7 +134,8 @@ export async function POST(request) {
   }
 }
 
-async function saveAttachmentToDatabase(memberId, chatGuid, phone, result, fileName, messageText) {
+// Helper function to save attachment message to database
+async function saveAttachmentToDatabase(memberId, chatGuid, phone, result, messageText, replyToGuid) {
   try {
     const { createClient } = require('@supabase/supabase-js')
     const supabase = createClient(
@@ -140,67 +143,47 @@ async function saveAttachmentToDatabase(memberId, chatGuid, phone, result, fileN
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
     )
 
-    // Find or create conversation
+    // Find conversation
     const { data: existingConv } = await supabase
       .from('conversations')
       .select('id')
       .eq('member_id', memberId)
       .single()
 
-    let conversationId = existingConv?.id
+    if (!existingConv) {
+      console.error('Conversation not found')
+      return
+    }
 
-    if (!conversationId) {
-      const { data: newConv, error: convError } = await supabase
-        .from('conversations')
-        .insert({
-          member_id: memberId,
-          chat_identifier: chatGuid,
-          status: 'Active',
-          last_message_at: new Date().toISOString()
-        })
-        .select('id')
-        .single()
-
-      if (convError) {
-        console.error('Error creating conversation:', convError)
-        return
-      }
-      conversationId = newConv.id
-    } else {
-      // Update last message time
-      await supabase
-        .from('conversations')
-        .update({ last_message_at: new Date().toISOString() })
-        .eq('id', conversationId)
+    // Get the attachment URL from the result if available
+    let mediaUrl = null
+    if (result.data?.guid) {
+      // Construct the media URL using the message GUID
+      // We'll need to fetch the message details to get the attachment GUID
+      // For now, we'll leave it null and let the webhook handle it
     }
 
     // Create message record
-    if (conversationId) {
-      const messageBody = messageText || '\ufffc' // Unicode attachment character
-      
-      const { error: msgError } = await supabase.from('messages').insert({
-        conversation_id: conversationId,
-        body: messageBody,
-        direction: 'outbound',
-        delivery_status: 'sent',
-        sender_phone: phone,
-        guid: result.data?.guid || `temp_${Date.now()}`,
-        is_read: false,
-      })
+    const messageBody = messageText || '\ufffc' // Use Unicode attachment character if no text
 
-      if (msgError) {
-        console.error('Error creating message record:', msgError)
-      } else {
-        console.log('✅ Attachment message saved to database')
-      }
+    const { error: msgError } = await supabase.from('messages').insert({
+      conversation_id: existingConv.id,
+      body: messageBody,
+      direction: 'outbound',
+      delivery_status: 'sent',
+      sender_phone: phone,
+      guid: result.data?.guid || `temp_${Date.now()}`,
+      media_url: mediaUrl, // Will be updated by webhook
+      thread_originator_guid: replyToGuid || null,
+      is_read: false
+    })
+
+    if (msgError) {
+      console.error('Error creating message record:', msgError)
+    } else {
+      console.log('Message saved to database')
     }
   } catch (error) {
-    console.error('❌ Database error:', error)
+    console.error('Database error:', error)
   }
-}
-
-export const config = {
-  api: {
-    bodyParser: false,
-  },
 }
