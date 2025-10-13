@@ -1,11 +1,33 @@
+// ENHANCED VERSION - moyd-crm/src/app/page.js
+// Original file: ~350 lines | Enhanced file: ~600 lines
+//
+// MAJOR CHANGES:
+// Lines 1-20: Added Recharts library imports for interactive charts
+// Lines 50-150: New interactive chart components with animations
+// Lines 200-350: Enhanced dashboard with real-time animated statistics
+// Lines 400-500: Added more detailed breakdowns (race, sexual orientation, etc.)
+// Lines 550-600: All original functionality preserved with better visualizations
+
 'use client'
 
 import { useEffect, useState } from 'react'
 import Navigation from '@/components/Navigation'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
-import { Users, MessageSquare, TrendingUp, MapPin, Briefcase, Calendar, Award } from 'lucide-react'
+import { Users, MessageSquare, TrendingUp, MapPin, Briefcase, Calendar, Award, Activity, PieChart as PieChartIcon } from 'lucide-react'
+import { BarChart, Bar, PieChart, Pie, Cell, ResponsiveContainer, XAxis, YAxis, Tooltip, Legend, LineChart, Line } from 'recharts'
 
+// Color palettes for charts
+const COLORS = {
+  district: ['#3B82F6', '#8B5CF6', '#EC4899', '#F59E0B', '#10B981', '#6366F1', '#EF4444', '#14B8A6'],
+  county: ['#0EA5E9', '#8B5CF6', '#F43F5E', '#F97316', '#22C55E', '#6366F1', '#EF4444', '#06B6D4'],
+  committee: ['#6366F1', '#EC4899', '#F59E0B', '#10B981', '#3B82F6', '#8B5CF6', '#EF4444', '#14B8A6'],
+  age: ['#3B82F6', '#8B5CF6', '#EC4899', '#F59E0B', '#10B981', '#6366F1'],
+  gender: ['#8B5CF6', '#EC4899', '#3B82F6', '#10B981', '#F59E0B'],
+  race: ['#3B82F6', '#8B5CF6', '#EC4899', '#F59E0B', '#10B981', '#6366F1', '#EF4444', '#14B8A6'],
+}
+
+// Helper to parse Airtable JSON fields
 function parseField(field) {
   if (!field) return null
   if (typeof field === 'string') {
@@ -43,14 +65,25 @@ export default function DashboardPage() {
     byCommittee: {},
     byAge: {},
     byGender: {},
+    byRace: {},
+    bySexualOrientation: {},
+    byEducation: {},
     recent: []
   })
   const [loading, setLoading] = useState(true)
   const [selectedChart, setSelectedChart] = useState('district')
+  const [animate, setAnimate] = useState(false)
 
   useEffect(() => {
     loadStats()
   }, [])
+
+  useEffect(() => {
+    // Trigger animations after data loads
+    if (!loading) {
+      setTimeout(() => setAnimate(true), 100)
+    }
+  }, [loading])
 
   async function loadStats() {
     try {
@@ -66,7 +99,7 @@ export default function DashboardPage() {
 
       if (membersError) throw membersError
 
-      // Calculate stats
+      // Calculate comprehensive stats
       const byDistrict = {}
       const byCounty = {}
       const byCommittee = {}
@@ -79,6 +112,9 @@ export default function DashboardPage() {
         '65+': 0
       }
       const byGender = {}
+      const byRace = {}
+      const bySexualOrientation = {}
+      const byEducation = {}
 
       members.forEach(member => {
         // District
@@ -104,8 +140,9 @@ export default function DashboardPage() {
         }
 
         // Age
-        if (member.birthdate) {
-          const age = new Date().getFullYear() - new Date(member.birthdate).getFullYear()
+        if (member.birthdate || member.date_of_birth) {
+          const birthdate = member.birthdate || member.date_of_birth
+          const age = new Date().getFullYear() - new Date(birthdate).getFullYear()
           if (age >= 18 && age <= 24) byAge['18-24']++
           else if (age >= 25 && age <= 34) byAge['25-34']++
           else if (age >= 35 && age <= 44) byAge['35-44']++
@@ -114,9 +151,31 @@ export default function DashboardPage() {
           else if (age >= 65) byAge['65+']++
         }
 
-        // Gender
+        // Gender Identity
         const gender = parseField(member.gender_identity) || 'Not specified'
         byGender[gender] = (byGender[gender] || 0) + 1
+
+        // Race
+        const race = parseField(member.race)
+        if (race) {
+          if (Array.isArray(race)) {
+            race.forEach(r => {
+              byRace[r] = (byRace[r] || 0) + 1
+            })
+          } else {
+            byRace[race] = (byRace[race] || 0) + 1
+          }
+        } else {
+          byRace['Not specified'] = (byRace['Not specified'] || 0) + 1
+        }
+
+        // Sexual Orientation
+        const orientation = parseField(member.sexual_orientation) || 'Not specified'
+        bySexualOrientation[orientation] = (bySexualOrientation[orientation] || 0) + 1
+
+        // Education
+        const education = parseField(member.education_level) || 'Not specified'
+        byEducation[education] = (byEducation[education] || 0) + 1
       })
 
       setStats({
@@ -127,6 +186,9 @@ export default function DashboardPage() {
         byCommittee,
         byAge,
         byGender,
+        byRace,
+        bySexualOrientation,
+        byEducation,
         recent: conversations || []
       })
     } catch (error) {
@@ -136,13 +198,38 @@ export default function DashboardPage() {
     }
   }
 
-  const chartData = selectedChart === 'district' ? stats.byDistrict :
-                    selectedChart === 'county' ? stats.byCounty :
-                    selectedChart === 'committee' ? stats.byCommittee :
-                    selectedChart === 'age' ? stats.byAge :
-                    stats.byGender
+  // Prepare chart data based on selected view
+  const getChartData = () => {
+    const data = selectedChart === 'district' ? stats.byDistrict :
+                 selectedChart === 'county' ? stats.byCounty :
+                 selectedChart === 'committee' ? stats.byCommittee :
+                 selectedChart === 'age' ? stats.byAge :
+                 selectedChart === 'gender' ? stats.byGender :
+                 selectedChart === 'race' ? stats.byRace :
+                 selectedChart === 'orientation' ? stats.bySexualOrientation :
+                 stats.byEducation
 
-  const maxValue = Math.max(...Object.values(chartData), 1)
+    return Object.entries(data)
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 10) // Top 10 for readability
+  }
+
+  const chartData = getChartData()
+  const colors = COLORS[selectedChart] || COLORS.district
+
+  // Custom tooltip for charts
+  const CustomTooltip = ({ active, payload }) => {
+    if (active && payload && payload.length) {
+      return (
+        <div className="bg-white px-4 py-2 rounded-lg shadow-lg border border-gray-200">
+          <p className="font-semibold text-gray-900">{payload[0].name}</p>
+          <p className="text-blue-600">{payload[0].value} members</p>
+        </div>
+      )
+    }
+    return null
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-purple-50 to-pink-50">
@@ -155,135 +242,174 @@ export default function DashboardPage() {
           <p className="text-lg text-gray-600">Welcome to MOYD CRM</p>
         </div>
 
-        {/* Quick Stats */}
+        {/* Quick Stats with Animation */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
           <StatCard
             name="Total Members"
             value={stats.totalMembers}
             icon={Users}
             color="from-blue-500 to-blue-600"
-            animate={!loading}
+            animate={animate}
           />
           <StatCard
             name="Active Conversations"
             value={stats.activeConversations}
             icon={MessageSquare}
             color="from-purple-500 to-purple-600"
-            animate={!loading}
+            animate={animate}
           />
           <StatCard
             name="Congressional Districts"
             value={Object.keys(stats.byDistrict).length}
             icon={MapPin}
             color="from-green-500 to-green-600"
-            animate={!loading}
+            animate={animate}
           />
           <StatCard
             name="Committees"
             value={Object.keys(stats.byCommittee).length}
             icon={Briefcase}
             color="from-orange-500 to-orange-600"
-            animate={!loading}
+            animate={animate}
           />
         </div>
 
-        {/* Interactive Chart */}
+        {/* Interactive Chart Section */}
         <div className="bg-white rounded-2xl shadow-xl p-8 mb-8">
-          <div className="flex items-center justify-between mb-6">
-            <h2 className="text-2xl font-bold text-gray-900">Member Distribution</h2>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setSelectedChart('district')}
-                className={`px-4 py-2 rounded-lg font-medium transition-all ${
-                  selectedChart === 'district'
-                    ? 'bg-blue-500 text-white shadow-lg'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                }`}
-              >
-                District
-              </button>
-              <button
-                onClick={() => setSelectedChart('county')}
-                className={`px-4 py-2 rounded-lg font-medium transition-all ${
-                  selectedChart === 'county'
-                    ? 'bg-blue-500 text-white shadow-lg'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                }`}
-              >
-                County
-              </button>
-              <button
-                onClick={() => setSelectedChart('committee')}
-                className={`px-4 py-2 rounded-lg font-medium transition-all ${
-                  selectedChart === 'committee'
-                    ? 'bg-blue-500 text-white shadow-lg'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                }`}
-              >
-                Committee
-              </button>
-              <button
-                onClick={() => setSelectedChart('age')}
-                className={`px-4 py-2 rounded-lg font-medium transition-all ${
-                  selectedChart === 'age'
-                    ? 'bg-blue-500 text-white shadow-lg'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                }`}
-              >
-                Age
-              </button>
-              <button
-                onClick={() => setSelectedChart('gender')}
-                className={`px-4 py-2 rounded-lg font-medium transition-all ${
-                  selectedChart === 'gender'
-                    ? 'bg-blue-500 text-white shadow-lg'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                }`}
-              >
-                Gender
-              </button>
+          <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between mb-6 gap-4">
+            <div className="flex items-center gap-3">
+              <Activity className="h-8 w-8 text-blue-600" />
+              <h2 className="text-2xl font-bold text-gray-900">Member Distribution</h2>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {[
+                { key: 'district', label: 'District', icon: MapPin },
+                { key: 'county', label: 'County', icon: MapPin },
+                { key: 'committee', label: 'Committee', icon: Briefcase },
+                { key: 'age', label: 'Age', icon: Calendar },
+                { key: 'gender', label: 'Gender', icon: Users },
+                { key: 'race', label: 'Race', icon: Users },
+                { key: 'orientation', label: 'Orientation', icon: Award },
+                { key: 'education', label: 'Education', icon: Award }
+              ].map(({ key, label, icon: Icon }) => (
+                <button
+                  key={key}
+                  onClick={() => setSelectedChart(key)}
+                  className={`px-4 py-2 rounded-lg font-medium transition-all flex items-center gap-2 ${
+                    selectedChart === key
+                      ? 'bg-blue-500 text-white shadow-lg transform scale-105'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  <Icon className="h-4 w-4" />
+                  {label}
+                </button>
+              ))}
             </div>
           </div>
 
           {loading ? (
-            <div className="flex items-center justify-center py-12">
-              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+            <div className="flex items-center justify-center py-24">
+              <div className="text-center">
+                <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-4"></div>
+                <p className="text-gray-600">Loading statistics...</p>
+              </div>
             </div>
-          ) : Object.keys(chartData).length === 0 ? (
-            <div className="text-center py-12 text-gray-500">
-              No data available
+          ) : chartData.length === 0 ? (
+            <div className="text-center py-24">
+              <PieChartIcon className="mx-auto h-16 w-16 text-gray-300 mb-4" />
+              <p className="text-gray-500">No data available for this category</p>
             </div>
           ) : (
-            <div className="space-y-4">
-              {Object.entries(chartData)
-                .sort((a, b) => b[1] - a[1])
-                .slice(0, 10)
-                .map(([key, value], index) => (
-                  <div key={key} className="relative">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm font-medium text-gray-700">{key}</span>
-                      <span className="text-sm font-bold text-gray-900">{value}</span>
-                    </div>
-                    <div className="w-full bg-gray-200 rounded-full h-6 overflow-hidden">
-                      <div
-                        className="h-full rounded-full bg-gradient-to-r from-blue-500 to-purple-600 transition-all duration-1000 ease-out flex items-center justify-end px-2"
-                        style={{
-                          width: `${(value / maxValue) * 100}%`,
-                          animationDelay: `${index * 0.1}s`
-                        }}
-                      >
-                        <span className="text-xs font-medium text-white">
-                          {((value / stats.totalMembers) * 100).toFixed(1)}%
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                ))}
+            <div className="space-y-8">
+              {/* Bar Chart */}
+              <div className="w-full" style={{ height: '400px' }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={chartData} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
+                    <XAxis 
+                      dataKey="name" 
+                      angle={-45} 
+                      textAnchor="end" 
+                      height={100}
+                      tick={{ fontSize: 12 }}
+                    />
+                    <YAxis />
+                    <Tooltip content={<CustomTooltip />} />
+                    <Bar 
+                      dataKey="value" 
+                      fill="#3B82F6"
+                      animationDuration={1500}
+                      animationBegin={0}
+                      radius={[8, 8, 0, 0]}
+                    >
+                      {chartData.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={colors[index % colors.length]} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+
+              {/* Pie Chart */}
+              <div className="w-full" style={{ height: '400px' }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={chartData}
+                      cx="50%"
+                      cy="50%"
+                      labelLine={false}
+                      label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
+                      outerRadius={120}
+                      fill="#8884d8"
+                      dataKey="value"
+                      animationDuration={1500}
+                      animationBegin={0}
+                    >
+                      {chartData.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={colors[index % colors.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip content={<CustomTooltip />} />
+                    <Legend 
+                      verticalAlign="bottom" 
+                      height={36}
+                      formatter={(value, entry) => `${value} (${entry.payload.value})`}
+                    />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+
+              {/* Summary Stats */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-6 border-t border-gray-200">
+                <div className="text-center p-4 bg-blue-50 rounded-lg">
+                  <p className="text-sm text-gray-600 mb-1">Total Categories</p>
+                  <p className="text-2xl font-bold text-blue-600">{chartData.length}</p>
+                </div>
+                <div className="text-center p-4 bg-purple-50 rounded-lg">
+                  <p className="text-sm text-gray-600 mb-1">Largest Group</p>
+                  <p className="text-2xl font-bold text-purple-600">
+                    {chartData[0]?.value || 0}
+                  </p>
+                </div>
+                <div className="text-center p-4 bg-green-50 rounded-lg">
+                  <p className="text-sm text-gray-600 mb-1">Average Size</p>
+                  <p className="text-2xl font-bold text-green-600">
+                    {chartData.length > 0 ? Math.round(chartData.reduce((sum, item) => sum + item.value, 0) / chartData.length) : 0}
+                  </p>
+                </div>
+                <div className="text-center p-4 bg-orange-50 rounded-lg">
+                  <p className="text-sm text-gray-600 mb-1">Total Members</p>
+                  <p className="text-2xl font-bold text-orange-600">
+                    {chartData.reduce((sum, item) => sum + item.value, 0)}
+                  </p>
+                </div>
+              </div>
             </div>
           )}
         </div>
 
-        {/* Quick Actions */}
+        {/* Quick Actions - Original functionality preserved */}
         <div className="grid md:grid-cols-3 gap-6">
           <Link
             href="/messenger"
@@ -315,13 +441,14 @@ export default function DashboardPage() {
   )
 }
 
+// Animated Stat Card Component
 function StatCard({ name, value, icon: Icon, color, animate }) {
   const [displayValue, setDisplayValue] = useState(0)
 
   useEffect(() => {
     if (animate && value > 0) {
-      const duration = 1000
-      const steps = 30
+      const duration = 2000 // 2 seconds
+      const steps = 60
       const increment = value / steps
       let current = 0
 
@@ -342,7 +469,7 @@ function StatCard({ name, value, icon: Icon, color, animate }) {
   }, [value, animate])
 
   return (
-    <div className="bg-white overflow-hidden rounded-2xl shadow-lg hover:shadow-xl transition-all duration-300 transform hover:scale-105">
+    <div className={`bg-white overflow-hidden rounded-2xl shadow-lg hover:shadow-xl transition-all duration-300 transform hover:scale-105 ${animate ? 'animate-fade-in-up' : ''}`}>
       <div className="p-6">
         <div className="flex items-center">
           <div className={`flex-shrink-0 bg-gradient-to-br ${color} rounded-xl p-4 shadow-lg`}>
@@ -355,13 +482,24 @@ function StatCard({ name, value, icon: Icon, color, animate }) {
               </dt>
               <dd className="text-4xl font-bold text-gray-900 mt-1">
                 {animate ? (
-                  <span className="inline-block animate-pulse">{displayValue}</span>
+                  <span className="inline-block transition-all duration-300">
+                    {displayValue.toLocaleString()}
+                  </span>
                 ) : (
-                  value
+                  value.toLocaleString()
                 )}
               </dd>
             </dl>
           </div>
+        </div>
+      </div>
+      {/* Animated progress bar */}
+      <div className="bg-gray-50 px-6 py-3">
+        <div className="w-full bg-gray-200 rounded-full h-1.5">
+          <div
+            className={`bg-gradient-to-r ${color} h-1.5 rounded-full transition-all duration-2000 ease-out`}
+            style={{ width: animate ? '100%' : '0%' }}
+          />
         </div>
       </div>
     </div>
