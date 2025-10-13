@@ -338,6 +338,17 @@ async function handleIncomingReaction(message) {
       return
     }
 
+    // ⚠️ CRITICAL FIX: Strip partIndex from associatedMessageGuid if present
+    // macOS 11+ formats are like "p:0/GUID", we need just "GUID"
+    let cleanAssociatedGuid = message.associatedMessageGuid
+    if (cleanAssociatedGuid && cleanAssociatedGuid.startsWith('p:')) {
+      const parts = cleanAssociatedGuid.split('/')
+      if (parts.length > 1) {
+        cleanAssociatedGuid = parts.slice(1).join('/')
+        console.log('🔧 Cleaned GUID from', message.associatedMessageGuid, 'to', cleanAssociatedGuid)
+      }
+    }
+
     // Save reaction as a message with association
     const reactionData = {
       conversation_id: conversation.id,
@@ -346,7 +357,7 @@ async function handleIncomingReaction(message) {
       delivery_status: 'delivered',
       sender_phone: normalizedPhone,
       guid: message.guid,
-      associated_message_guid: message.associatedMessageGuid,
+      associated_message_guid: cleanAssociatedGuid,  // Use cleaned GUID
       associated_message_type: message.associatedMessageType,
       is_read: true,
       created_at: new Date(message.dateCreated).toISOString()
