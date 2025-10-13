@@ -129,12 +129,12 @@ Reply STOP to opt out of future messages.`
 
         console.log(`📤 Sending intro to ${recipient.name} (${recipient.phone})`)
 
-        // Create intro_send record BEFORE sending
+        // ⚡ FIXED: Changed message_template_id to template_id to match database schema
         const { data: introSend, error: introSendError } = await supabase
           .from('intro_sends')
           .insert({
             member_id: recipient.memberId,
-            message_template_id: messageTemplate?.id || null,
+            template_id: messageTemplate?.id || null,  // FIXED: was message_template_id
             status: 'sending'
           })
           .select()
@@ -142,6 +142,7 @@ Reply STOP to opt out of future messages.`
         
         if (introSendError) {
           console.error('Error creating intro_send record:', introSendError)
+          // Continue anyway - don't let tracking issues prevent message sending
         } else {
           introSendId = introSend.id
         }
@@ -194,7 +195,10 @@ Reply STOP to opt out of future messages.`
         if (introSendId) {
           await supabase
             .from('intro_sends')
-            .update({ status: 'sent' })
+            .update({ 
+              status: 'sent',
+              sent_at: new Date().toISOString()  // Set timestamp explicitly
+            })
             .eq('id', introSendId)
         }
 
