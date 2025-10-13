@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server'
 const BB_HOST = process.env.NEXT_PUBLIC_BLUEBUBBLES_HOST
 const BB_PASSWORD = process.env.NEXT_PUBLIC_BLUEBUBBLES_PASSWORD
 
-// ⚡ CRITICAL: Generate unique GUID for each message (from Airtable pattern)
+// Generate unique GUID for each message
 function generateTempGuid() {
   return `web_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
 }
@@ -30,8 +30,6 @@ export async function POST(request) {
       )
     }
 
-    // For reactions, we don't need message text
-    // For regular messages, we do
     if (!reaction && !message) {
       return NextResponse.json(
         { error: 'Message or reaction is required' },
@@ -58,7 +56,7 @@ export async function POST(request) {
   }
 }
 
-// ⚡ FIXED: Send a regular message with private-api method
+// Send a regular message
 async function sendRegularMessage(chatGuid, message, phone, memberId) {
   console.log('📤 Sending regular message via BlueBubbles Private API:', {
     host: BB_HOST,
@@ -66,12 +64,9 @@ async function sendRegularMessage(chatGuid, message, phone, memberId) {
     messageLength: message.length
   })
 
-  // ⚡ CRITICAL: Generate tempGuid for message tracking
   const tempGuid = generateTempGuid()
-
-  // ⚡ CRITICAL: Use AbortController with timeout (from Airtable pattern)
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), 10000) // 10 second timeout
+  const timeoutId = setTimeout(() => controller.abort(), 10000)
 
   try {
     const response = await fetch(
@@ -83,8 +78,8 @@ async function sendRegularMessage(chatGuid, message, phone, memberId) {
         body: JSON.stringify({
           chatGuid: chatGuid,
           message: message,
-          method: 'private-api', // ⚡ CRITICAL: This enables sending to new numbers
-          tempGuid: tempGuid      // ⚡ CRITICAL: Helps track the message
+          method: 'private-api',
+          tempGuid: tempGuid
         }),
       }
     )
@@ -96,8 +91,7 @@ async function sendRegularMessage(chatGuid, message, phone, memberId) {
     console.log('📥 BlueBubbles response:', {
       status: result.status,
       ok: response.ok,
-      hasData: !!result.data,
-      hasError: !!result.error
+      hasData: !!result.data
     })
 
     if (!response.ok || result.status !== 200) {
@@ -140,14 +134,13 @@ async function sendRegularMessage(chatGuid, message, phone, memberId) {
   }
 }
 
-// ⚡ FIXED: Send a reply with private-api method
+// Send a reply
 async function sendReply(chatGuid, message, replyToGuid, phone, memberId, partIndex) {
   console.log('📤 Sending reply via BlueBubbles Private API:', {
     host: BB_HOST,
     chatGuid,
     replyToGuid,
-    partIndex,
-    messageLength: message.length
+    partIndex
   })
 
   const tempGuid = generateTempGuid()
@@ -218,14 +211,11 @@ async function sendReply(chatGuid, message, replyToGuid, phone, memberId, partIn
 // Send a reaction/tapback
 async function sendReaction(chatGuid, messageGuid, reactionType, partIndex, phone, memberId) {
   console.log('📤 Sending reaction via BlueBubbles:', {
-    host: BB_HOST,
     chatGuid,
     messageGuid,
-    reactionType,
-    partIndex
+    reactionType
   })
 
-  // Validate reaction type
   const validReactions = [
     'love', 'like', 'dislike', 'laugh', 'emphasize', 'question',
     '-love', '-like', '-dislike', '-laugh', '-emphasize', '-question'
@@ -240,7 +230,6 @@ async function sendReaction(chatGuid, messageGuid, reactionType, partIndex, phon
     )
   }
 
-  // Map reaction names to codes (for database storage)
   const reactionMap = {
     'love': 2000,
     'like': 2001,
@@ -301,7 +290,7 @@ async function sendReaction(chatGuid, messageGuid, reactionType, partIndex, phon
   })
 }
 
-// ⚡ FIXED: Improved database save function (non-blocking, resilient)
+// ⚡ FIXED: Save message to database (matches Supabase schema)
 async function saveMessageToDatabase(memberId, chatGuid, messageBody, phone, result, direction, threadOriginatorGuid = null) {
   try {
     const { createClient } = require('@supabase/supabase-js')
@@ -317,11 +306,11 @@ async function saveMessageToDatabase(memberId, chatGuid, messageBody, phone, res
       .from('conversations')
       .select('id')
       .eq('member_id', memberId)
-      .maybeSingle() // ⚡ Uses maybeSingle to avoid errors
+      .maybeSingle()
 
     let conversationId = existingConv?.id
 
-    // If no conversation exists, try to create one
+    // If no conversation exists, create one (matching webhook pattern)
     if (!conversationId) {
       console.log('🔧 Creating new conversation for member:', memberId)
       
@@ -330,30 +319,34 @@ async function saveMessageToDatabase(memberId, chatGuid, messageBody, phone, res
         .insert({
           member_id: memberId,
           chat_identifier: chatGuid,
-          status: 'Active',
+          // ⚡ REMOVED status field - doesn't exist in Supabase schema
+          last_message: messageBody,  // Added to match webhook pattern
           last_message_at: new Date().toISOString()
         })
         .select('id')
         .maybeSingle()
 
       if (convError) {
-        console.error('⚠️ Error creating conversation (will retry later):', convError)
-        // ⚡ Don't return early - continue to save message
+        console.error('⚠️ Error creating conversation:', convError)
+        // Continue to save message anyway
       } else if (newConv) {
         conversationId = newConv.id
         console.log('✅ Created new conversation:', conversationId)
       }
     } else {
-      // Update existing conversation timestamp
+      // Update existing conversation (matching webhook pattern)
       await supabase
         .from('conversations')
-        .update({ last_message_at: new Date().toISOString() })
+        .update({ 
+          last_message: messageBody,
+          last_message_at: new Date().toISOString() 
+        })
         .eq('id', conversationId)
-        .then(() => console.log('✅ Updated conversation timestamp'))
+        .then(() => console.log('✅ Updated conversation'))
         .catch(err => console.error('⚠️ Error updating conversation:', err))
     }
 
-    // ⚡ Always try to create the message record
+    // Always try to create the message record
     const messageData = {
       body: messageBody,
       direction: direction,
@@ -375,17 +368,15 @@ async function saveMessageToDatabase(memberId, chatGuid, messageBody, phone, res
 
     if (msgError) {
       console.error('⚠️ Error creating message record:', msgError)
-      // ⚡ Don't throw - message was already sent via BlueBubbles
     } else {
       console.log('✅ Message saved to database!')
     }
   } catch (error) {
     console.error('❌ Database error (message was still sent):', error)
-    // ⚡ Don't throw - message was already sent successfully via BlueBubbles
   }
 }
 
-// Helper function to save reaction to database (non-blocking)
+// Save reaction to database
 async function saveReactionToDatabase(memberId, chatGuid, phone, result, associatedMessageGuid, associatedMessageType) {
   try {
     const { createClient } = require('@supabase/supabase-js')
@@ -402,14 +393,14 @@ async function saveReactionToDatabase(memberId, chatGuid, phone, result, associa
       .maybeSingle()
 
     if (!existingConv) {
-      console.warn('⚠️ Conversation not found for reaction, will be created when reply comes in')
+      console.warn('⚠️ Conversation not found for reaction')
       return
     }
 
-    // Create reaction record (stored as a message with association)
+    // Create reaction record
     const { error: msgError } = await supabase.from('messages').insert({
       conversation_id: existingConv.id,
-      body: '', // Reactions don't have body text
+      body: '',
       direction: 'outbound',
       delivery_status: 'sent',
       sender_phone: phone,
