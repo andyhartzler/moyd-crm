@@ -345,8 +345,10 @@ export default function MembersPage() {
                         {member.county} County
                         {member.congressional_district && (
                           <span className="ml-2 text-xs bg-purple-100 text-purple-800 px-2 py-0.5 rounded">
-                            CD-{member.congressional_district}
-                          </span>
+  {member.congressional_district?.toString().startsWith('CD-') 
+    ? member.congressional_district 
+    : `CD-${member.congressional_district}`}
+</span>
                         )}
                       </div>
                     )}
@@ -456,7 +458,11 @@ export default function MembersPage() {
                     {selectedMember.congressional_district && (
                       <div>
                         <dt className="text-sm font-medium text-gray-500">Congressional District</dt>
-                        <dd className="mt-1 text-sm text-gray-900">CD-{selectedMember.congressional_district}</dd>
+                        <dd className="mt-1 text-sm text-gray-900">
+  {selectedMember.congressional_district?.toString().startsWith('CD-') 
+    ? selectedMember.congressional_district 
+    : `CD-${selectedMember.congressional_district}`}
+</dd>
                       </div>
                     )}
                     {selectedMember.community_type && (
