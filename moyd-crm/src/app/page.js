@@ -1,52 +1,66 @@
-// FIXED VERSION - src/app/page.js
-//
-// FIX APPLIED: Added Cell to recharts imports to resolve "Can't find variable: Cell" error
-
 'use client'
 
 import { useEffect, useState } from 'react'
 import Navigation from '@/components/Navigation'
-import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
-import { Users, MessageSquare, TrendingUp, MapPin, Briefcase, Calendar, Award, Activity } from 'lucide-react'
-// FIX: Added Cell to the import statement
-import { BarChart, Bar, Cell, ResponsiveContainer, XAxis, YAxis, Tooltip, Legend } from 'recharts'
+import Link from 'next/link'
+import { Users, MessageSquare, TrendingUp, MapPin, Briefcase, Calendar, Activity, Award } from 'lucide-react'
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts'
 
-// Color palettes for charts
 const COLORS = {
-  district: ['#3B82F6', '#8B5CF6', '#EC4899', '#F59E0B', '#10B981', '#6366F1', '#EF4444', '#14B8A6'],
-  county: ['#0EA5E9', '#8B5CF6', '#F43F5E', '#F97316', '#22C55E', '#6366F1', '#EF4444', '#06B6D4'],
-  committee: ['#6366F1', '#EC4899', '#F59E0B', '#10B981', '#3B82F6', '#8B5CF6', '#EF4444', '#14B8A6'],
+  district: ['#3B82F6', '#8B5CF6', '#EC4899', '#F59E0B', '#10B981', '#6366F1', '#F97316', '#14B8A6'],
+  county: ['#3B82F6', '#8B5CF6', '#EC4899', '#F59E0B', '#10B981', '#6366F1', '#F97316', '#14B8A6'],
+  committee: ['#3B82F6', '#8B5CF6', '#EC4899', '#F59E0B', '#10B981', '#6366F1', '#F97316', '#14B8A6'],
   age: ['#3B82F6', '#8B5CF6', '#EC4899', '#F59E0B', '#10B981', '#6366F1'],
-  gender: ['#8B5CF6', '#EC4899', '#3B82F6', '#10B981', '#F59E0B'],
-  race: ['#3B82F6', '#8B5CF6', '#EC4899', '#F59E0B', '#10B981', '#6366F1', '#EF4444', '#14B8A6'],
+  gender: ['#3B82F6', '#EC4899', '#8B5CF6', '#10B981'],
+  race: ['#3B82F6', '#8B5CF6', '#EC4899', '#F59E0B', '#10B981', '#6366F1', '#F97316', '#14B8A6']
 }
 
+// Enhanced helper to parse Airtable JSON fields
 function parseField(field) {
   if (!field) return null
+  
+  // If it's already a simple string and doesn't look like JSON
   if (typeof field === 'string') {
-    if (field.trim().startsWith('{') || field.trim().startsWith('[')) {
-      try {
-        const parsed = JSON.parse(field)
-        if (parsed && typeof parsed === 'object' && parsed.name) {
-          return parsed.name
-        }
-        if (Array.isArray(parsed)) {
-          return parsed.map(item => item.name || item).filter(Boolean)
-        }
-        return field
-      } catch {
-        return field
-      }
+    const trimmed = field.trim()
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
+      return field
     }
-    return field
+    
+    // Try to parse JSON
+    try {
+      const parsed = JSON.parse(field)
+      
+      // If it's an object with 'name' property
+      if (parsed && typeof parsed === 'object' && parsed.name) {
+        return parsed.name
+      }
+      
+      // If it's an array of objects with 'name' properties
+      if (Array.isArray(parsed)) {
+        return parsed.map(item => 
+          (item && typeof item === 'object' && item.name) ? item.name : item
+        ).filter(Boolean)
+      }
+      
+      return field
+    } catch {
+      return field
+    }
   }
+  
+  // If it's already an object with name property
   if (field && typeof field === 'object' && field.name) {
     return field.name
   }
+  
+  // If it's an array
   if (Array.isArray(field)) {
-    return field.map(item => typeof item === 'object' && item.name ? item.name : item).filter(Boolean)
+    return field.map(item => 
+      (item && typeof item === 'object' && item.name) ? item.name : item
+    ).filter(Boolean)
   }
+  
   return field
 }
 
@@ -80,6 +94,7 @@ export default function Home() {
 
       if (error) throw error
 
+      console.log('Fetched members count:', data?.length)
       setMembers(data || [])
       calculateStats(data || [])
     } catch (error) {
@@ -87,6 +102,29 @@ export default function Home() {
     } finally {
       setLoading(false)
     }
+  }
+
+  function calculateAge(birthdate) {
+    if (!birthdate) return null
+    const today = new Date()
+    const birth = new Date(birthdate)
+    let age = today.getFullYear() - birth.getFullYear()
+    const monthDiff = today.getMonth() - birth.getMonth()
+    if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birth.getDate())) {
+      age--
+    }
+    return age
+  }
+
+  function getAgeGroup(birthdate) {
+    const age = calculateAge(birthdate)
+    if (!age || age < 14) return null
+    if (age < 18) return '14-18'
+    if (age < 22) return '18-22'
+    if (age < 26) return '22-26'
+    if (age < 30) return '26-30'
+    if (age < 36) return '30-36'
+    return '36+'
   }
 
   function calculateStats(membersList) {
@@ -103,10 +141,11 @@ export default function Home() {
     }
 
     membersList.forEach(member => {
-      // District
-      const district = parseField(member.district)
+      // Congressional District
+      const district = parseField(member.congressional_district || member.district)
       if (district) {
-        newStats.byDistrict[district] = (newStats.byDistrict[district] || 0) + 1
+        const districtName = `CD-${district}`
+        newStats.byDistrict[districtName] = (newStats.byDistrict[districtName] || 0) + 1
       }
 
       // County
@@ -116,24 +155,37 @@ export default function Home() {
       }
 
       // Committee
-      const committees = member.committee
-      if (committees && Array.isArray(committees)) {
-        committees.forEach(comm => {
-          const committee = parseField(comm)
-          if (committee) {
-            newStats.byCommittee[committee] = (newStats.byCommittee[committee] || 0) + 1
+      let committees = member.committee
+      if (committees) {
+        if (typeof committees === 'string') {
+          try {
+            committees = JSON.parse(committees)
+          } catch {
+            committees = [committees]
           }
-        })
+        }
+        
+        if (Array.isArray(committees)) {
+          committees.forEach(comm => {
+            const committee = parseField(comm)
+            if (committee) {
+              newStats.byCommittee[committee] = (newStats.byCommittee[committee] || 0) + 1
+            }
+          })
+        }
       }
 
-      // Age
-      if (member.age) {
-        const ageGroup = getAgeGroup(member.age)
-        newStats.byAge[ageGroup] = (newStats.byAge[ageGroup] || 0) + 1
+      // Age (calculate from birthdate or date_of_birth)
+      const birthdate = member.birthdate || member.date_of_birth
+      if (birthdate) {
+        const ageGroup = getAgeGroup(birthdate)
+        if (ageGroup) {
+          newStats.byAge[ageGroup] = (newStats.byAge[ageGroup] || 0) + 1
+        }
       }
 
       // Gender
-      const gender = parseField(member.gender)
+      const gender = parseField(member.gender_identity || member.gender)
       if (gender) {
         newStats.byGender[gender] = (newStats.byGender[gender] || 0) + 1
       }
@@ -141,32 +193,30 @@ export default function Home() {
       // Race
       const race = parseField(member.race)
       if (race) {
-        newStats.byRace[race] = (newStats.byRace[race] || 0) + 1
+        if (Array.isArray(race)) {
+          race.forEach(r => {
+            if (r) newStats.byRace[r] = (newStats.byRace[r] || 0) + 1
+          })
+        } else {
+          newStats.byRace[race] = (newStats.byRace[race] || 0) + 1
+        }
       }
 
       // Orientation
-      const orientation = parseField(member.orientation)
+      const orientation = parseField(member.sexual_orientation || member.orientation)
       if (orientation) {
         newStats.byOrientation[orientation] = (newStats.byOrientation[orientation] || 0) + 1
       }
 
       // Education
-      const education = parseField(member.education)
+      const education = parseField(member.education_level || member.education)
       if (education) {
         newStats.byEducation[education] = (newStats.byEducation[education] || 0) + 1
       }
     })
 
+    console.log('Calculated stats:', newStats)
     setStats(newStats)
-  }
-
-  function getAgeGroup(age) {
-    if (age < 18) return '14-18'
-    if (age < 22) return '18-22'
-    if (age < 26) return '22-26'
-    if (age < 30) return '26-30'
-    if (age < 36) return '30-36'
-    return '36+'
   }
 
   const chartData = (() => {
@@ -227,32 +277,32 @@ export default function Home() {
   }
 
   const StatCard = ({ name, value, icon: Icon, color, animate }) => (
-    <div className={`bg-white rounded-xl shadow-lg p-6 transition-all duration-700 transform ${animate ? 'scale-100 opacity-100' : 'scale-95 opacity-0'}`}>
+    <div className={`bg-white rounded-xl shadow-lg p-6 transition-all duration-700 transform ${animate ? 'translate-y-0 opacity-100' : 'translate-y-4 opacity-0'}`}>
       <div className="flex items-center justify-between">
         <div>
           <p className="text-sm font-medium text-gray-600 mb-1">{name}</p>
           <p className="text-3xl font-bold text-gray-900">{value}</p>
         </div>
-        <div className={`p-3 rounded-lg bg-gradient-to-br ${color}`}>
-          <Icon className="h-6 w-6 text-white" />
+        <div className={`p-3 bg-gradient-to-br ${color} rounded-lg`}>
+          <Icon className="h-8 w-8 text-white" />
         </div>
       </div>
     </div>
   )
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-purple-50 to-pink-50">
+    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-blue-50">
       <Navigation />
       
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Header */}
-        <div className="mb-6">
+        <div className="mb-8">
           <h1 className="text-4xl font-bold text-gray-900 mb-2">Dashboard</h1>
           <p className="text-lg text-gray-600">Welcome to Missouri Young Democrats CRM</p>
         </div>
 
-        {/* Quick Action Buttons */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
+        {/* Quick Actions */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
           <Link
             href="/messenger"
             className="bg-gradient-to-br from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white p-4 rounded-xl shadow-lg hover:shadow-xl transition-all duration-300 transform hover:scale-105"
@@ -369,7 +419,8 @@ export default function Home() {
           ) : chartData.data.length === 0 ? (
             <div className="text-center py-24">
               <Activity className="mx-auto h-16 w-16 text-gray-300 mb-4" />
-              <p className="text-gray-500">No data available for this category</p>
+              <p className="text-gray-500 text-lg">No data available for this category</p>
+              <p className="text-gray-400 text-sm mt-2">Try selecting a different category or add member data</p>
             </div>
           ) : (
             <div className="space-y-8">
@@ -427,9 +478,9 @@ export default function Home() {
                   </p>
                 </div>
                 <div className="text-center p-4 bg-orange-50 rounded-lg">
-                  <p className="text-sm text-gray-600 mb-1">Total Members</p>
+                  <p className="text-sm text-gray-600 mb-1">Smallest Group</p>
                   <p className="text-2xl font-bold text-orange-600">
-                    {chartData.data.reduce((sum, item) => sum + item.value, 0)}
+                    {chartData.data[chartData.data.length - 1]?.value || 0}
                   </p>
                 </div>
               </div>

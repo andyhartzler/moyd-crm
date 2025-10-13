@@ -1,43 +1,45 @@
-// COMPLETE FIXED VERSION - src/app/members/page.js
-//
-// FIXES APPLIED:
-// 1. Members are now fully clickable to see complete details
-// 2. Detailed modal shows ALL Supabase fields
-// 3. Improved avatar display with fallback
-// 4. Gravatar integration (simple, no API quotas needed)
-// 5. All original functionality preserved and enhanced
-// 6. Added message button to quickly message members
-
 'use client'
 
 import { useEffect, useState } from 'react'
 import Navigation from '@/components/Navigation'
 import { supabase } from '@/lib/supabase'
-import { User, Search, MapPin, MessageSquare, Mail, Phone, X, Calendar, Briefcase, GraduationCap, Heart, Users as UsersIcon, Home, Globe } from 'lucide-react'
+import { User, Search, MapPin, MessageSquare, Mail, Phone, X, Calendar, Briefcase, GraduationCap, Heart, Users as UsersIcon, Home, Globe, Filter, ChevronDown } from 'lucide-react'
 import { useRouter } from 'next/navigation'
-import crypto from 'crypto'
 
 // Helper to parse Airtable JSON fields
 function parseField(field) {
   if (!field) return null
   
   if (typeof field === 'string') {
-    if (field.trim().startsWith('{') || field.trim().startsWith('[')) {
-      try {
-        const parsed = JSON.parse(field)
-        if (parsed && typeof parsed === 'object' && parsed.name) {
-          return parsed.name
-        }
-        return field
-      } catch {
-        return field
-      }
+    const trimmed = field.trim()
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
+      return field
     }
-    return field
+    
+    try {
+      const parsed = JSON.parse(field)
+      if (parsed && typeof parsed === 'object' && parsed.name) {
+        return parsed.name
+      }
+      if (Array.isArray(parsed)) {
+        return parsed.map(item => 
+          (item && typeof item === 'object' && item.name) ? item.name : item
+        ).filter(Boolean)
+      }
+      return field
+    } catch {
+      return field
+    }
   }
   
   if (field && typeof field === 'object' && field.name) {
     return field.name
+  }
+  
+  if (Array.isArray(field)) {
+    return field.map(item => 
+      (item && typeof item === 'object' && item.name) ? item.name : item
+    ).filter(Boolean)
   }
   
   return field
@@ -61,53 +63,43 @@ function formatDate(dateString) {
   }
 }
 
-// Generate Gravatar URL from email (no API needed!)
-function getGravatarUrl(email) {
-  if (!email) return null
-  
-  // Create MD5 hash in the browser
-  const hash = crypto.createHash ? 
-    crypto.createHash('md5').update(email.toLowerCase().trim()).digest('hex') :
-    null
-  
-  if (!hash) return null
-  
-  return `https://www.gravatar.com/avatar/${hash}?d=404&s=200`
+function calculateAge(birthdate) {
+  if (!birthdate) return null
+  const today = new Date()
+  const birth = new Date(birthdate)
+  let age = today.getFullYear() - birth.getFullYear()
+  const monthDiff = today.getMonth() - birth.getMonth()
+  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birth.getDate())) {
+    age--
+  }
+  return age
 }
 
 export default function MembersPage() {
   const router = useRouter()
   const [members, setMembers] = useState([])
+  const [filteredMembers, setFilteredMembers] = useState([])
   const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
-  const [countyFilter, setCountyFilter] = useState('all')
-  const [counties, setCounties] = useState([])
   const [selectedMember, setSelectedMember] = useState(null)
+  
+  // Filter and sort states
+  const [filterType, setFilterType] = useState('all') // all, county, district, committee, age
+  const [filterValue, setFilterValue] = useState('all')
+  const [filterOptions, setFilterOptions] = useState([])
+  const [showFilterDropdown, setShowFilterDropdown] = useState(false)
 
   useEffect(() => {
     loadMembers()
-    loadCounties()
   }, [])
 
-  async function loadCounties() {
-    try {
-      const { data, error } = await supabase
-        .from('members')
-        .select('county')
-        .not('county', 'is', null)
+  useEffect(() => {
+    applyFilters()
+  }, [members, searchTerm, filterType, filterValue])
 
-      if (error) throw error
-
-      const parsedCounties = data
-        .map(m => parseField(m.county))
-        .filter(Boolean)
-      
-      const uniqueCounties = [...new Set(parsedCounties)].sort()
-      setCounties(uniqueCounties)
-    } catch (error) {
-      console.error('Error loading counties:', error)
-    }
-  }
+  useEffect(() => {
+    updateFilterOptions()
+  }, [filterType, members])
 
   async function loadMembers() {
     setLoading(true)
@@ -122,16 +114,19 @@ export default function MembersPage() {
       const parsedMembers = data.map(member => ({
         ...member,
         county: parseField(member.county),
-        congressional_district: parseField(member.congressional_district),
+        congressional_district: parseField(member.congressional_district || member.district),
         committee: formatCommittees(member.committee),
         preferred_pronouns: parseField(member.preferred_pronouns),
-        gender_identity: parseField(member.gender_identity),
+        gender_identity: parseField(member.gender_identity || member.gender),
         race: parseField(member.race),
-        sexual_orientation: parseField(member.sexual_orientation),
+        sexual_orientation: parseField(member.sexual_orientation || member.orientation),
         community_type: parseField(member.community_type),
         desire_to_lead: parseField(member.desire_to_lead),
-        education_level: parseField(member.education_level),
-        industry: parseField(member.industry)
+        education_level: parseField(member.education_level || member.education),
+        industry: parseField(member.industry),
+        languages: parseField(member.languages), // FIX: Parse languages JSON
+        hours_per_week: parseField(member.hours_per_week), // FIX: Parse hours per week JSON
+        age: calculateAge(member.birthdate || member.date_of_birth)
       }))
 
       setMembers(parsedMembers || [])
@@ -142,71 +137,84 @@ export default function MembersPage() {
     }
   }
 
-  // Avatar component with Gravatar support
-  function MemberAvatar({ member, size = 'md', onClick }) {
-    const sizeClasses = {
-      sm: 'h-10 w-10 text-lg',
-      md: 'h-12 w-12 text-xl',
-      lg: 'h-16 w-16 text-2xl',
-      xl: 'h-24 w-24 text-4xl'
-    }
-
-    const [imageError, setImageError] = useState(false)
-    const gravatarUrl = getGravatarUrl(member.email)
-
-    const initials = member.name
-      .split(' ')
-      .map(n => n[0])
-      .slice(0, 2)
-      .join('')
-      .toUpperCase()
-
-    const colorClasses = [
-      'bg-blue-500',
-      'bg-purple-500',
-      'bg-green-500',
-      'bg-yellow-500',
-      'bg-red-500',
-      'bg-indigo-500',
-      'bg-pink-500',
-      'bg-teal-500'
-    ]
+  function updateFilterOptions() {
+    let options = []
     
-    const colorIndex = member.name.charCodeAt(0) % colorClasses.length
-    const bgColor = colorClasses[colorIndex]
+    switch (filterType) {
+      case 'county':
+        options = [...new Set(members.map(m => m.county).filter(Boolean))].sort()
+        break
+      case 'district':
+        options = [...new Set(members.map(m => m.congressional_district).filter(Boolean))].sort()
+        break
+      case 'committee':
+        const allCommittees = members.flatMap(m => m.committee || [])
+        options = [...new Set(allCommittees)].sort()
+        break
+      case 'age':
+        options = ['14-18', '18-22', '22-26', '26-30', '30-36', '36+']
+        break
+      case 'city':
+        options = [...new Set(members.map(m => m.city).filter(Boolean))].sort()
+        break
+      default:
+        options = []
+    }
+    
+    setFilterOptions(options)
+    setFilterValue('all')
+  }
 
-    // Try Gravatar first, fallback to initials
-    if (gravatarUrl && !imageError) {
-      return (
-        <img
-          src={gravatarUrl}
-          alt={member.name}
-          className={`${sizeClasses[size]} rounded-full object-cover border-2 border-gray-200 ${onClick ? 'cursor-pointer hover:border-blue-400 transition-colors' : ''}`}
-          onClick={onClick}
-          onError={() => setImageError(true)}
-        />
+  function applyFilters() {
+    let filtered = [...members]
+
+    // Apply search term
+    if (searchTerm) {
+      const term = searchTerm.toLowerCase()
+      filtered = filtered.filter(member =>
+        member.name?.toLowerCase().includes(term) ||
+        member.email?.toLowerCase().includes(term) ||
+        member.phone?.includes(term) ||
+        member.county?.toLowerCase().includes(term) ||
+        member.city?.toLowerCase().includes(term)
       )
     }
 
-    return (
-      <div
-        className={`${sizeClasses[size]} rounded-full ${bgColor} flex items-center justify-center text-white font-bold ${onClick ? 'cursor-pointer hover:scale-110 transition-transform' : ''} border-2 border-gray-200`}
-        onClick={onClick}
-      >
-        {initials}
-      </div>
-    )
-  }
+    // Apply filter
+    if (filterType !== 'all' && filterValue !== 'all') {
+      switch (filterType) {
+        case 'county':
+          filtered = filtered.filter(m => m.county === filterValue)
+          break
+        case 'district':
+          filtered = filtered.filter(m => m.congressional_district === filterValue)
+          break
+        case 'committee':
+          filtered = filtered.filter(m => m.committee?.includes(filterValue))
+          break
+        case 'age':
+          filtered = filtered.filter(m => {
+            const age = m.age
+            if (!age) return false
+            switch (filterValue) {
+              case '14-18': return age >= 14 && age < 18
+              case '18-22': return age >= 18 && age < 22
+              case '22-26': return age >= 22 && age < 26
+              case '26-30': return age >= 26 && age < 30
+              case '30-36': return age >= 30 && age < 36
+              case '36+': return age >= 36
+              default: return true
+            }
+          })
+          break
+        case 'city':
+          filtered = filtered.filter(m => m.city === filterValue)
+          break
+      }
+    }
 
-  const filteredMembers = members.filter(member => {
-    const matchesSearch = member.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         member.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         member.phone?.includes(searchTerm)
-    
-    const matchesCounty = countyFilter === 'all' || member.county === countyFilter
-    
-    return matchesSearch && matchesCounty
-  })
+    setFilteredMembers(filtered)
+  }
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -214,101 +222,136 @@ export default function MembersPage() {
       
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Header */}
-        <div className="mb-6">
+        <div className="mb-8">
           <h1 className="text-3xl font-bold text-gray-900">Members</h1>
-          <p className="mt-1 text-sm text-gray-600">
-            {filteredMembers.length} total members
-          </p>
+          <p className="mt-2 text-sm text-gray-600">{filteredMembers.length} total members</p>
         </div>
 
-        {/* Filters */}
-        <div className="mb-6 flex flex-col sm:flex-row gap-4">
-          <div className="flex-1 relative">
-            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-              <Search className="h-5 w-5 text-gray-400" />
-            </div>
+        {/* Search and Filter Section */}
+        <div className="mb-6 space-y-4">
+          {/* Search Bar */}
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-5 w-5" />
             <input
               type="text"
-              placeholder="Search members..."
+              placeholder="Search members by name, email, phone, county, or city..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md leading-5 bg-white placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+              className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900"
             />
           </div>
 
-          <div className="sm:w-64">
+          {/* Filter Section */}
+          <div className="flex flex-wrap gap-3 items-center">
+            <div className="flex items-center gap-2">
+              <Filter className="h-5 w-5 text-gray-600" />
+              <span className="text-sm font-medium text-gray-700">Filter by:</span>
+            </div>
+            
+            {/* Filter Type Selector */}
             <select
-              value={countyFilter}
-              onChange={(e) => setCountyFilter(e.target.value)}
-              className="block w-full px-3 py-2 border border-gray-300 rounded-md leading-5 bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+              value={filterType}
+              onChange={(e) => setFilterType(e.target.value)}
+              className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900 bg-white"
             >
-              <option value="all">All Counties</option>
-              {counties.map(county => (
-                <option key={county} value={county}>{county}</option>
-              ))}
+              <option value="all">No Filter</option>
+              <option value="county">County</option>
+              <option value="district">Congressional District</option>
+              <option value="committee">Committee</option>
+              <option value="age">Age Group</option>
+              <option value="city">City</option>
             </select>
+
+            {/* Filter Value Selector */}
+            {filterType !== 'all' && (
+              <select
+                value={filterValue}
+                onChange={(e) => setFilterValue(e.target.value)}
+                className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900 bg-white"
+              >
+                <option value="all">All {filterType}</option>
+                {filterOptions.map(option => (
+                  <option key={option} value={option}>{option}</option>
+                ))}
+              </select>
+            )}
+
+            {/* Clear Filters */}
+            {(filterType !== 'all' || searchTerm) && (
+              <button
+                onClick={() => {
+                  setFilterType('all')
+                  setFilterValue('all')
+                  setSearchTerm('')
+                }}
+                className="px-4 py-2 text-sm font-medium text-gray-700 hover:text-gray-900 underline"
+              >
+                Clear all filters
+              </button>
+            )}
           </div>
         </div>
 
-        {/* Members List - FIXED: Entire card is now clickable */}
+        {/* Members Grid */}
         {loading ? (
           <div className="text-center py-12">
-            <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-            <p className="mt-2 text-gray-600">Loading members...</p>
+            <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-4"></div>
+            <p className="text-gray-600">Loading members...</p>
           </div>
         ) : filteredMembers.length === 0 ? (
-          <div className="text-center py-12">
-            <User className="mx-auto h-12 w-12 text-gray-400" />
-            <h3 className="mt-2 text-sm font-medium text-gray-900">No members found</h3>
-            <p className="mt-1 text-sm text-gray-500">Try adjusting your search or filter.</p>
+          <div className="text-center py-12 bg-white rounded-lg shadow">
+            <User className="mx-auto h-16 w-16 text-gray-300 mb-4" />
+            <h3 className="text-lg font-medium text-gray-900 mb-2">No members found</h3>
+            <p className="text-gray-500">Try adjusting your search or filter criteria</p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {filteredMembers.map((member) => (
               <div
                 key={member.id}
                 onClick={() => setSelectedMember(member)}
-                className="bg-white overflow-hidden shadow rounded-lg hover:shadow-lg transition-shadow cursor-pointer border-2 border-transparent hover:border-blue-400"
+                className="bg-white rounded-lg shadow-md hover:shadow-xl transition-all duration-200 cursor-pointer transform hover:-translate-y-1"
               >
-                <div className="p-5">
-                  <div className="flex items-center">
+                <div className="p-6">
+                  {/* Avatar and Name */}
+                  <div className="flex items-start gap-4 mb-4">
                     <div className="flex-shrink-0">
-                      <MemberAvatar member={member} size="lg" />
+                      <div className="h-16 w-16 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white text-2xl font-bold">
+                        {member.name?.charAt(0) || '?'}
+                      </div>
                     </div>
-                    <div className="ml-5 w-0 flex-1">
-                      <dl>
-                        <dt className="text-sm font-medium text-gray-500 truncate">Name</dt>
-                        <dd className="flex items-center text-lg font-medium text-gray-900">
-                          {member.name}
-                        </dd>
-                      </dl>
+                    <div className="flex-1 min-w-0">
+                      <h3 className="text-lg font-semibold text-gray-900 truncate">{member.name}</h3>
                       {member.email && (
-                        <div className="mt-1">
-                          <p className="flex items-center text-sm text-gray-500">
-                            <Mail className="flex-shrink-0 mr-1.5 h-4 w-4 text-gray-400" />
-                            <span className="truncate">{member.email}</span>
-                          </p>
+                        <div className="flex items-center text-sm text-gray-500 mt-1">
+                          <Mail className="flex-shrink-0 mr-1.5 h-4 w-4 text-gray-400" />
+                          <span className="truncate">{member.email}</span>
                         </div>
                       )}
                       {member.phone && (
-                        <div className="mt-1">
-                          <p className="flex items-center text-sm text-gray-500">
-                            <Phone className="flex-shrink-0 mr-1.5 h-4 w-4 text-gray-400" />
-                            {member.phone}
-                          </p>
+                        <div className="flex items-center text-sm text-gray-500 mt-1">
+                          <Phone className="flex-shrink-0 mr-1.5 h-4 w-4 text-gray-400" />
+                          {member.phone}
                         </div>
                       )}
                     </div>
                   </div>
-                  <div className="mt-4">
+
+                  {/* Location and Committees */}
+                  <div className="space-y-2">
                     {member.county && (
                       <div className="flex items-center text-sm text-gray-500">
                         <MapPin className="flex-shrink-0 mr-1.5 h-4 w-4 text-gray-400" />
                         {member.county} County
+                        {member.congressional_district && (
+                          <span className="ml-2 text-xs bg-purple-100 text-purple-800 px-2 py-0.5 rounded">
+                            CD-{member.congressional_district}
+                          </span>
+                        )}
                       </div>
                     )}
                     {member.committee && member.committee.length > 0 && (
-                      <div className="mt-2 flex flex-wrap gap-1">
+                      <div className="flex flex-wrap gap-1">
                         {member.committee.slice(0, 2).map((comm, idx) => (
                           <span
                             key={idx}
@@ -325,6 +368,8 @@ export default function MembersPage() {
                       </div>
                     )}
                   </div>
+
+                  {/* Click to view */}
                   <div className="mt-4 pt-4 border-t border-gray-200">
                     <p className="text-xs text-blue-600 font-medium text-center">
                       Click to view full details →
@@ -337,7 +382,7 @@ export default function MembersPage() {
         )}
       </div>
 
-      {/* Member Detail Modal - NEW: Shows all Supabase fields */}
+      {/* Member Detail Modal */}
       {selectedMember && (
         <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center p-4 z-50 overflow-y-auto">
           <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
@@ -353,81 +398,55 @@ export default function MembersPage() {
             
             <div className="px-6 py-6 space-y-6">
               {/* Profile Header */}
-              <div className="flex items-center space-x-6">
-                <MemberAvatar member={selectedMember} size="xl" />
+              <div className="flex items-start gap-6">
+                <div className="flex-shrink-0">
+                  <div className="h-24 w-24 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white text-4xl font-bold">
+                    {selectedMember.name?.charAt(0) || '?'}
+                  </div>
+                </div>
                 <div className="flex-1">
-                  <h2 className="text-3xl font-bold text-gray-900">{selectedMember.name}</h2>
-                  {selectedMember.preferred_pronouns && (
-                    <p className="text-sm text-gray-500 mt-1">({selectedMember.preferred_pronouns})</p>
-                  )}
-                  <div className="mt-4 flex gap-2">
-                    {selectedMember.phone && (
-                      <button
-                        onClick={() => {
-                          const phone = selectedMember.phone_e164 || selectedMember.phone
-                          router.push(`/messenger?phone=${encodeURIComponent(phone)}&name=${encodeURIComponent(selectedMember.name)}&memberId=${selectedMember.id}`)
-                        }}
-                        className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-                      >
-                        <MessageSquare className="h-4 w-4 mr-2" />
-                        Send Message
-                      </button>
-                    )}
+                  <h2 className="text-3xl font-bold text-gray-900 mb-2">{selectedMember.name}</h2>
+                  <div className="space-y-2">
                     {selectedMember.email && (
-                      <a
-                        href={`mailto:${selectedMember.email}`}
-                        className="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-                      >
-                        <Mail className="h-4 w-4 mr-2" />
-                        Email
-                      </a>
+                      <div className="flex items-center text-gray-600">
+                        <Mail className="h-5 w-5 mr-2 text-gray-400" />
+                        <a href={`mailto:${selectedMember.email}`} className="hover:text-blue-600">
+                          {selectedMember.email}
+                        </a>
+                      </div>
+                    )}
+                    {selectedMember.phone && (
+                      <div className="flex items-center text-gray-600">
+                        <Phone className="h-5 w-5 mr-2 text-gray-400" />
+                        <a href={`tel:${selectedMember.phone}`} className="hover:text-blue-600">
+                          {selectedMember.phone}
+                        </a>
+                      </div>
                     )}
                   </div>
                 </div>
               </div>
 
-              {/* Contact Information */}
-              <div>
-                <h4 className="text-base font-semibold text-gray-900 mb-3 flex items-center">
-                  <Phone className="h-5 w-5 mr-2" />
-                  Contact Information
-                </h4>
-                <dl className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
-                  {selectedMember.email && (
-                    <div>
-                      <dt className="text-sm font-medium text-gray-500">Email</dt>
-                      <dd className="mt-1 text-sm text-gray-900">{selectedMember.email}</dd>
-                    </div>
-                  )}
-                  {selectedMember.phone && (
-                    <div>
-                      <dt className="text-sm font-medium text-gray-500">Phone</dt>
-                      <dd className="mt-1 text-sm text-gray-900">{selectedMember.phone}</dd>
-                    </div>
-                  )}
-                  {selectedMember.phone_e164 && (
-                    <div>
-                      <dt className="text-sm font-medium text-gray-500">Phone (E164)</dt>
-                      <dd className="mt-1 text-sm text-gray-900">{selectedMember.phone_e164}</dd>
-                    </div>
-                  )}
-                  {selectedMember.address && (
-                    <div className="sm:col-span-2">
-                      <dt className="text-sm font-medium text-gray-500">Address</dt>
-                      <dd className="mt-1 text-sm text-gray-900">{selectedMember.address}</dd>
-                    </div>
-                  )}
-                </dl>
-              </div>
-
               {/* Location */}
-              {(selectedMember.county || selectedMember.congressional_district || selectedMember.community_type) && (
+              {(selectedMember.address || selectedMember.city || selectedMember.county || selectedMember.congressional_district || selectedMember.community_type) && (
                 <div>
                   <h4 className="text-base font-semibold text-gray-900 mb-3 flex items-center">
                     <MapPin className="h-5 w-5 mr-2" />
                     Location
                   </h4>
                   <dl className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
+                    {selectedMember.address && (
+                      <div className="sm:col-span-2">
+                        <dt className="text-sm font-medium text-gray-500">Address</dt>
+                        <dd className="mt-1 text-sm text-gray-900">{selectedMember.address}</dd>
+                      </div>
+                    )}
+                    {selectedMember.city && (
+                      <div>
+                        <dt className="text-sm font-medium text-gray-500">City</dt>
+                        <dd className="mt-1 text-sm text-gray-900">{selectedMember.city}</dd>
+                      </div>
+                    )}
                     {selectedMember.county && (
                       <div>
                         <dt className="text-sm font-medium text-gray-500">County</dt>
@@ -437,7 +456,7 @@ export default function MembersPage() {
                     {selectedMember.congressional_district && (
                       <div>
                         <dt className="text-sm font-medium text-gray-500">Congressional District</dt>
-                        <dd className="mt-1 text-sm text-gray-900">{selectedMember.congressional_district}</dd>
+                        <dd className="mt-1 text-sm text-gray-900">CD-{selectedMember.congressional_district}</dd>
                       </div>
                     )}
                     {selectedMember.community_type && (
@@ -451,7 +470,7 @@ export default function MembersPage() {
               )}
 
               {/* Demographics */}
-              {(selectedMember.birthdate || selectedMember.date_of_birth || selectedMember.gender_identity || selectedMember.race || selectedMember.preferred_pronouns || selectedMember.sexual_orientation || selectedMember.hispanic_latino !== null) && (
+              {(selectedMember.birthdate || selectedMember.date_of_birth || selectedMember.age || selectedMember.gender_identity || selectedMember.race || selectedMember.preferred_pronouns || selectedMember.sexual_orientation || selectedMember.hispanic_latino !== null || selectedMember.languages) && (
                 <div>
                   <h4 className="text-base font-semibold text-gray-900 mb-3 flex items-center">
                     <Calendar className="h-5 w-5 mr-2" />
@@ -463,6 +482,9 @@ export default function MembersPage() {
                         <dt className="text-sm font-medium text-gray-500">Date of Birth</dt>
                         <dd className="mt-1 text-sm text-gray-900">
                           {formatDate(selectedMember.birthdate || selectedMember.date_of_birth)}
+                          {selectedMember.age && (
+                            <span className="ml-2 text-gray-600">({selectedMember.age} years old)</span>
+                          )}
                         </dd>
                       </div>
                     )}
@@ -505,7 +527,11 @@ export default function MembersPage() {
                     {selectedMember.languages && (
                       <div>
                         <dt className="text-sm font-medium text-gray-500">Languages</dt>
-                        <dd className="mt-1 text-sm text-gray-900">{selectedMember.languages}</dd>
+                        <dd className="mt-1 text-sm text-gray-900">
+                          {Array.isArray(selectedMember.languages) 
+                            ? selectedMember.languages.join(', ') 
+                            : selectedMember.languages}
+                        </dd>
                       </div>
                     )}
                   </dl>
@@ -586,7 +612,11 @@ export default function MembersPage() {
                     {selectedMember.hours_per_week && (
                       <div>
                         <dt className="text-sm font-medium text-gray-500">Hours Per Week</dt>
-                        <dd className="mt-1 text-sm text-gray-900">{selectedMember.hours_per_week}</dd>
+                        <dd className="mt-1 text-sm text-gray-900">
+                          {Array.isArray(selectedMember.hours_per_week)
+                            ? selectedMember.hours_per_week.join(', ')
+                            : selectedMember.hours_per_week}
+                        </dd>
                       </div>
                     )}
                     {selectedMember.registered_voter !== null && (
@@ -629,34 +659,25 @@ export default function MembersPage() {
                 </div>
               )}
 
-              {/* Metadata */}
-              <div className="border-t border-gray-200 pt-4">
-                <h4 className="text-base font-semibold text-gray-900 mb-3">Metadata</h4>
-                <dl className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
-                  <div>
-                    <dt className="text-sm font-medium text-gray-500">Member ID</dt>
-                    <dd className="mt-1 text-sm text-gray-900 font-mono">{selectedMember.id}</dd>
-                  </div>
-                  {selectedMember.created_at && (
+              {/* Opt Out Status - KEEP THIS */}
+              {selectedMember.opt_out !== null && (
+                <div className="border-t border-gray-200 pt-4">
+                  <dl className="grid grid-cols-1 gap-x-4 gap-y-3">
                     <div>
-                      <dt className="text-sm font-medium text-gray-500">Joined</dt>
-                      <dd className="mt-1 text-sm text-gray-900">{formatDate(selectedMember.created_at)}</dd>
+                      <dt className="text-sm font-medium text-gray-500">Opt Out Status</dt>
+                      <dd className="mt-1">
+                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                          selectedMember.opt_out 
+                            ? 'bg-red-100 text-red-800' 
+                            : 'bg-green-100 text-green-800'
+                        }`}>
+                          {selectedMember.opt_out ? 'Opted Out' : 'Active'}
+                        </span>
+                      </dd>
                     </div>
-                  )}
-                  {selectedMember.last_contacted && (
-                    <div>
-                      <dt className="text-sm font-medium text-gray-500">Last Contacted</dt>
-                      <dd className="mt-1 text-sm text-gray-900">{formatDate(selectedMember.last_contacted)}</dd>
-                    </div>
-                  )}
-                  {selectedMember.opt_out !== null && (
-                    <div>
-                      <dt className="text-sm font-medium text-gray-500">Opt Out</dt>
-                      <dd className="mt-1 text-sm text-gray-900">{selectedMember.opt_out ? 'Yes' : 'No'}</dd>
-                    </div>
-                  )}
-                </dl>
-              </div>
+                  </dl>
+                </div>
+              )}
             </div>
 
             <div className="sticky bottom-0 bg-gray-50 px-6 py-4 border-t border-gray-200 flex justify-end gap-3">
