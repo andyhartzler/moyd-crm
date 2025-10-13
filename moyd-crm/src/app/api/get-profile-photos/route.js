@@ -1,23 +1,44 @@
-// NEW FILE - moyd-crm/src/app/api/get-profile-photos/route.js
+// FIXED VERSION - moyd-crm/src/app/api/get-profile-photos/route.js
 // This API route fetches profile photos from Google People API
-// Lines: ~150
+// FIX: Proper private key parsing to avoid DECODER error
 
 import { NextResponse } from 'next/server'
 import { google } from 'googleapis'
 
-// Initialize Google People API
+// Initialize Google People API with proper key handling
 function getGoogleAuth() {
-  const auth = new google.auth.GoogleAuth({
-    credentials: {
-      client_email: process.env.GOOGLE_CLIENT_EMAIL,
-      private_key: process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-    },
-    scopes: [
-      'https://www.googleapis.com/auth/contacts.readonly',
-      'https://www.googleapis.com/auth/directory.readonly'
-    ],
-  })
-  return auth
+  try {
+    // Get the private key and handle the newlines properly
+    let privateKey = process.env.GOOGLE_PRIVATE_KEY
+    
+    if (!privateKey) {
+      console.warn('GOOGLE_PRIVATE_KEY not found')
+      return null
+    }
+
+    // Remove quotes if they exist (from Vercel env vars)
+    privateKey = privateKey.replace(/^"(.*)"$/, '$1')
+    
+    // Replace literal \n with actual newlines
+    privateKey = privateKey.replace(/\\n/g, '\n')
+
+    const auth = new google.auth.GoogleAuth({
+      credentials: {
+        client_email: process.env.GOOGLE_CLIENT_EMAIL,
+        private_key: privateKey,
+      },
+      scopes: [
+        'https://www.googleapis.com/auth/contacts.readonly',
+        'https://www.googleapis.com/auth/directory.readonly',
+        'https://www.googleapis.com/auth/userinfo.profile'
+      ],
+    })
+    
+    return auth
+  } catch (error) {
+    console.error('Error creating Google Auth:', error)
+    return null
+  }
 }
 
 export async function POST(request) {
@@ -33,19 +54,26 @@ export async function POST(request) {
 
     // Check if Google API credentials are configured
     if (!process.env.GOOGLE_CLIENT_EMAIL || !process.env.GOOGLE_PRIVATE_KEY) {
-      console.warn('Google API credentials not configured')
+      console.warn('Google API credentials not configured - returning empty photos')
       return NextResponse.json({ photos: {} })
     }
 
     const auth = getGoogleAuth()
+    if (!auth) {
+      console.error('Failed to create Google Auth')
+      return NextResponse.json({ photos: {} })
+    }
+
     const people = google.people({ version: 'v1', auth })
 
     const photos = {}
 
     // Fetch photos for members with email addresses
     // We'll batch these requests to avoid rate limiting
-    const batchSize = 10
+    const batchSize = 5
     const membersWithEmail = members.filter(m => m.email)
+
+    console.log(`Fetching photos for ${membersWithEmail.length} members`)
 
     for (let i = 0; i < membersWithEmail.length; i += batchSize) {
       const batch = membersWithEmail.slice(i, i + batchSize)
@@ -53,7 +81,7 @@ export async function POST(request) {
       await Promise.all(
         batch.map(async (member) => {
           try {
-            // Search for the person by email
+            // Search for the person by email using searchContacts
             const searchResponse = await people.people.searchContacts({
               query: member.email,
               readMask: 'names,emailAddresses,photos',
@@ -68,8 +96,13 @@ export async function POST(request) {
                 const photoUrl = person.photos[0].url
                 if (photoUrl) {
                   photos[member.id] = photoUrl
+                  console.log(`✓ Found photo for ${member.email}`)
                 }
+              } else {
+                console.log(`✗ No photo for ${member.email}`)
               }
+            } else {
+              console.log(`✗ Not found in contacts: ${member.email}`)
             }
           } catch (error) {
             // Log error but continue with other members
@@ -80,52 +113,16 @@ export async function POST(request) {
 
       // Add a small delay between batches to respect rate limits
       if (i + batchSize < membersWithEmail.length) {
-        await new Promise(resolve => setTimeout(resolve, 100))
+        await new Promise(resolve => setTimeout(resolve, 200))
       }
     }
 
+    console.log(`Successfully fetched ${Object.keys(photos).length} photos`)
     return NextResponse.json({ photos })
   } catch (error) {
-    console.error('Error fetching profile photos:', error)
+    console.error('Error in profile photos API:', error)
     return NextResponse.json(
       { error: 'Failed to fetch profile photos', photos: {} },
-      { status: 500 }
-    )
-  }
-}
-
-// Alternative: Using Google OAuth2 for user-authenticated access
-// This approach would require users to authenticate with their Google account
-export async function GET(request) {
-  try {
-    // This would be used if you want to use OAuth2 flow
-    // instead of service account authentication
-    
-    // Check if user has authenticated
-    const accessToken = request.headers.get('authorization')?.split('Bearer ')[1]
-    
-    if (!accessToken) {
-      return NextResponse.json(
-        { error: 'Not authenticated' },
-        { status: 401 }
-      )
-    }
-
-    // Use the access token to call People API
-    const people = google.people({ version: 'v1' })
-    
-    // Example: Get user's own profile photo
-    const response = await people.people.get({
-      resourceName: 'people/me',
-      personFields: 'photos,names,emailAddresses',
-      access_token: accessToken
-    })
-
-    return NextResponse.json({ profile: response.data })
-  } catch (error) {
-    console.error('Error in GET /api/get-profile-photos:', error)
-    return NextResponse.json(
-      { error: 'Failed to fetch profile' },
       { status: 500 }
     )
   }
