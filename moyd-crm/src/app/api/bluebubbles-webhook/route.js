@@ -77,15 +77,41 @@ async function handleNewMessage(data) {
       text: message.text?.substring(0, 50)
     })
 
+    // ⚠️ CRITICAL: Convert string reaction types to numeric codes
+    const reactionMap = {
+      'love': 2000,
+      'like': 2001,
+      'dislike': 2002,
+      'laugh': 2003,
+      'emphasize': 2004,
+      'question': 2005,
+      '-love': 3000,
+      '-like': 3001,
+      '-dislike': 3002,
+      '-laugh': 3003,
+      '-emphasize': 3004,
+      '-question': 3005
+    }
+
+    // Check if associatedMessageType is a string and convert it
+    let numericReactionType = message.associatedMessageType
+    if (typeof message.associatedMessageType === 'string' && reactionMap[message.associatedMessageType.toLowerCase()]) {
+      numericReactionType = reactionMap[message.associatedMessageType.toLowerCase()]
+      console.log(`🔧 Converted reaction type from "${message.associatedMessageType}" to ${numericReactionType}`)
+    }
+
     // ⚠️ CRITICAL: Check if this is a REACTION first (before checking isFromMe)
     // Reactions can be from us OR from them
-    if (message.associatedMessageGuid && message.associatedMessageType >= 2000) {
+    // Check for either numeric type >= 2000 OR if we converted from string
+    if (message.associatedMessageGuid && (numericReactionType >= 2000 || typeof message.associatedMessageType === 'string')) {
       console.log('🎭 Processing reaction:', {
-        type: message.associatedMessageType,
+        type: numericReactionType,
+        originalType: message.associatedMessageType,
         targetGuid: message.associatedMessageGuid,
         isFromMe: message.isFromMe
       })
-      await handleIncomingReaction(message)
+      // Pass the numeric type to the handler
+      await handleIncomingReaction({ ...message, associatedMessageType: numericReactionType })
       return
     }
 
@@ -104,7 +130,6 @@ async function handleNewMessage(data) {
     if (message.handle?.address) {
       phone = message.handle.address
     } else if (message.chats?.[0]?.chatIdentifier) {
-      // Extract from chat identifier (format: iMessage;-;+1234567890)
       const chatId = message.chats[0].chatIdentifier
       if (chatId.includes(';-;')) {
         phone = chatId.split(';-;')[1]
@@ -114,11 +139,11 @@ async function handleNewMessage(data) {
     }
 
     if (!phone) {
-      console.log('No phone found in message')
+      console.log('Could not extract phone from message')
       return
     }
 
-    // Normalize phone number to E.164 format
+    // Normalize phone
     let normalizedPhone = phone.replace(/[\s\-\(\)]/g, '')
     if (!normalizedPhone.startsWith('+')) {
       if (normalizedPhone.startsWith('1') && normalizedPhone.length === 11) {
@@ -130,76 +155,59 @@ async function handleNewMessage(data) {
 
     console.log('Looking for member with phone:', normalizedPhone)
 
-    // Find the member by phone
-    const { data: members } = await supabase
+    // Find member
+    const { data: members, error: memberError } = await supabase
       .from('members')
-      .select('id')
+      .select('id, name')
       .eq('phone_e164', normalizedPhone)
-      .limit(1)
+      .single()
 
-    if (!members || members.length === 0) {
-      console.log('No member found for phone:', normalizedPhone)
+    if (memberError || !members) {
+      console.log('Member not found:', normalizedPhone)
       return
     }
 
-    const memberId = members[0].id
-    console.log('Found member:', memberId)
+    console.log('Found member:', members.id)
 
     // Find or create conversation
-    let { data: conversation } = await supabase
+    const { data: existingConv } = await supabase
       .from('conversations')
       .select('id')
-      .eq('member_id', memberId)
+      .eq('member_id', members.id)
       .single()
 
-    const chatGuid = message.chats?.[0]?.guid || `iMessage;-;${normalizedPhone}`
-
-    if (!conversation) {
+    let conversation
+    if (existingConv) {
+      console.log('Updating existing conversation')
+      const { data: updatedConv } = await supabase
+        .from('conversations')
+        .update({ updated_at: new Date().toISOString() })
+        .eq('id', existingConv.id)
+        .select()
+        .single()
+      
+      conversation = updatedConv
+    } else {
       console.log('Creating new conversation')
-      const { data: newConv, error } = await supabase
+      const { data: newConv } = await supabase
         .from('conversations')
         .insert({
-          member_id: memberId,
-          chat_identifier: chatGuid,
-          status: 'Active',
-          last_message_at: new Date(message.dateCreated).toISOString(),
-          is_typing: false,
-          typing_since: null
+          member_id: members.id,
+          last_message: message.text || '',
+          last_message_at: new Date(message.dateCreated).toISOString()
         })
-        .select('id')
+        .select()
         .single()
-
-      if (error) {
-        console.error('Error creating conversation:', error)
-        return
-      }
+      
       conversation = newConv
-    } else {
-      // Update last message time and clear typing indicator
-      console.log('Updating existing conversation')
-      await supabase
-        .from('conversations')
-        .update({ 
-          last_message_at: new Date(message.dateCreated).toISOString(),
-          is_typing: false,
-          typing_since: null
-        })
-        .eq('id', conversation.id)
     }
 
-    // Check if message already exists
-    const { data: existing } = await supabase
-      .from('messages')
-      .select('id')
-      .eq('guid', message.guid)
-      .single()
-
-    if (existing) {
-      console.log('Message already exists:', message.guid)
+    if (!conversation) {
+      console.log('Failed to get/create conversation')
       return
     }
 
-    // Handle attachments - construct media URL
+    // Construct media URL
     let mediaUrl = null
     if (message.attachments && message.attachments.length > 0) {
       const attachment = message.attachments[0]
@@ -338,7 +346,7 @@ async function handleIncomingReaction(message) {
       return
     }
 
-    // ⚠️ CRITICAL FIX: Strip partIndex from associatedMessageGuid if present
+    // ⚠️ CRITICAL: Strip partIndex from associatedMessageGuid if present
     // macOS 11+ formats are like "p:0/GUID", we need just "GUID"
     let cleanAssociatedGuid = message.associatedMessageGuid
     if (cleanAssociatedGuid && cleanAssociatedGuid.startsWith('p:')) {
@@ -349,6 +357,12 @@ async function handleIncomingReaction(message) {
       }
     }
 
+    // Ensure we have a numeric reaction type
+    if (typeof message.associatedMessageType !== 'number') {
+      console.error('❌ Reaction type is not numeric after conversion:', message.associatedMessageType)
+      return
+    }
+
     // Save reaction as a message with association
     const reactionData = {
       conversation_id: conversation.id,
@@ -357,11 +371,17 @@ async function handleIncomingReaction(message) {
       delivery_status: 'delivered',
       sender_phone: normalizedPhone,
       guid: message.guid,
-      associated_message_guid: cleanAssociatedGuid,  // Use cleaned GUID
+      associated_message_guid: cleanAssociatedGuid,
       associated_message_type: message.associatedMessageType,
       is_read: true,
       created_at: new Date(message.dateCreated).toISOString()
     }
+
+    console.log('💾 Saving reaction to database:', {
+      guid: reactionData.guid,
+      associated_guid: reactionData.associated_message_guid,
+      type: reactionData.associated_message_type
+    })
 
     const { error } = await supabase
       .from('messages')
