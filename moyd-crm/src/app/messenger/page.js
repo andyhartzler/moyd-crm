@@ -45,6 +45,7 @@ function MessengerContent() {
 
   // Group message state
   const [showGroupComposer, setShowGroupComposer] = useState(mode === 'group')
+  const [showMemberSelector, setShowMemberSelector] = useState(false) // Track if showing member selector for individual messages
   const [groupFilterType, setGroupFilterType] = useState('committee') // 'committee', 'county', 'congressional_district'
   const [groupFilterValue, setGroupFilterValue] = useState('')
   const [groupFilterOptions, setGroupFilterOptions] = useState([])
@@ -526,7 +527,7 @@ function MessengerContent() {
   }
 
   // Main Messenger Home - Show two buttons
-  if (!phone && !name && !memberId && !showGroupComposer) {
+  if (!phone && !name && !memberId && !showGroupComposer && !showMemberSelector) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 flex flex-col">
         <div className="bg-white border-b border-gray-200 shadow-sm">
@@ -552,9 +553,10 @@ function MessengerContent() {
             {/* Compose New Message Button */}
             <button
               onClick={() => {
-                // This will load the member selector
-                router.push('/messenger')
-                loadMembers()
+                setShowMemberSelector(true)
+                if (members.length === 0) {
+                  loadMembers()
+                }
               }}
               className="w-full group relative overflow-hidden bg-white hover:bg-gradient-to-r hover:from-blue-500 hover:to-blue-600 border-2 border-blue-200 hover:border-blue-500 rounded-2xl p-8 transition-all duration-300 shadow-lg hover:shadow-2xl transform hover:-translate-y-1"
             >
@@ -847,7 +849,7 @@ function MessengerContent() {
   }
 
   // Member Selector (for individual messages)
-  if (!phone || !name || !memberId) {
+  if ((!phone || !name || !memberId) && !showGroupComposer && showMemberSelector) {
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col">
         <div className="bg-white border-b border-gray-200">
@@ -858,7 +860,7 @@ function MessengerContent() {
                 <p className="text-sm text-gray-500">Choose who you want to message</p>
               </div>
               <button
-                onClick={() => router.push('/messenger')}
+                onClick={() => setShowMemberSelector(false)}
                 className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
               >
                 <ArrowLeft className="h-4 w-4" />
