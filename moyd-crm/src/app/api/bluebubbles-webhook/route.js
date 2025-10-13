@@ -9,6 +9,12 @@ const supabase = createClient(
 const BB_HOST = process.env.NEXT_PUBLIC_BLUEBUBBLES_HOST
 const BB_PASSWORD = process.env.NEXT_PUBLIC_BLUEBUBBLES_PASSWORD
 
+// Opt-out keywords (case insensitive)
+const OPT_OUT_KEYWORDS = ['stop', 'unsubscribe', 'opt out', 'optout', 'opt-out', 'cancel', 'end', 'quit']
+
+// Opt-in keywords (case insensitive)
+const OPT_IN_KEYWORDS = ['start', 'yes', 'subscribe', 'opt in', 'optin', 'opt-in', 'resume', 'rejoin']
+
 export async function POST(request) {
   try {
     const body = await request.json()
@@ -62,6 +68,133 @@ export async function POST(request) {
       success: true, 
       error: error.message 
     })
+  }
+}
+
+// NEW: Check if message is an opt-out or opt-in request
+async function checkOptOutOptIn(message, normalizedPhone, memberId) {
+  if (!message.text || typeof message.text !== 'string') return
+  
+  const messageText = message.text.trim().toLowerCase()
+  
+  // Check for opt-out keywords
+  const isOptOut = OPT_OUT_KEYWORDS.some(keyword => {
+    const pattern = new RegExp(`\\b${keyword}\\b`, 'i')
+    return pattern.test(messageText) || messageText === keyword
+  })
+  
+  // Check for opt-in keywords
+  const isOptIn = OPT_IN_KEYWORDS.some(keyword => {
+    const pattern = new RegExp(`\\b${keyword}\\b`, 'i')
+    return pattern.test(messageText) || messageText === keyword
+  })
+  
+  if (isOptOut) {
+    console.log('🚫 Opt-out detected from:', normalizedPhone)
+    
+    // Update member opt_out status
+    const { error: updateError } = await supabase
+      .from('members')
+      .update({ opt_out: true })
+      .eq('id', memberId)
+    
+    if (updateError) {
+      console.error('Error updating opt-out status:', updateError)
+    } else {
+      console.log('✅ Member opted out successfully')
+      
+      // Log the opt-out event
+      await supabase
+        .from('opt_out_log')
+        .insert({
+          member_id: memberId,
+          action: 'opt_out',
+          message_guid: message.guid,
+          message_text: message.text
+        })
+      
+      // Send confirmation message
+      await sendOptOutConfirmation(normalizedPhone)
+    }
+  } else if (isOptIn) {
+    console.log('✅ Opt-in detected from:', normalizedPhone)
+    
+    // Update member opt_out status
+    const { error: updateError } = await supabase
+      .from('members')
+      .update({ opt_out: false })
+      .eq('id', memberId)
+    
+    if (updateError) {
+      console.error('Error updating opt-in status:', updateError)
+    } else {
+      console.log('✅ Member opted in successfully')
+      
+      // Log the opt-in event
+      await supabase
+        .from('opt_out_log')
+        .insert({
+          member_id: memberId,
+          action: 'opt_in',
+          message_guid: message.guid,
+          message_text: message.text
+        })
+      
+      // Send confirmation message
+      await sendOptInConfirmation(normalizedPhone)
+    }
+  }
+}
+
+// Send opt-out confirmation
+async function sendOptOutConfirmation(phone) {
+  try {
+    const chatGuid = phone.includes(';') ? phone : `iMessage;-;${phone}`
+    
+    const confirmationMessage = `You've been unsubscribed from MO Young Democrats messages. You won't receive any more messages from us.
+
+To opt back in at any time, just reply with START or YES.`
+
+    await fetch(`${BB_HOST}/api/v1/message/text?password=${BB_PASSWORD}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chatGuid: chatGuid,
+        message: confirmationMessage,
+        method: 'private-api',
+        tempGuid: `optout_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+      }),
+    })
+    
+    console.log('📤 Opt-out confirmation sent')
+  } catch (error) {
+    console.error('Error sending opt-out confirmation:', error)
+  }
+}
+
+// Send opt-in confirmation
+async function sendOptInConfirmation(phone) {
+  try {
+    const chatGuid = phone.includes(';') ? phone : `iMessage;-;${phone}`
+    
+    const confirmationMessage = `Welcome back! You've been re-subscribed to MO Young Democrats messages. 🎉
+
+We're glad to have you back! To unsubscribe again, reply STOP anytime.`
+
+    await fetch(`${BB_HOST}/api/v1/message/text?password=${BB_PASSWORD}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chatGuid: chatGuid,
+        message: confirmationMessage,
+        method: 'private-api',
+        tempGuid: `optin_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+      }),
+    })
+    
+    console.log('📤 Opt-in confirmation sent')
+  } catch (error) {
+    console.error('Error sending opt-in confirmation:', error)
   }
 }
 
@@ -168,6 +301,9 @@ async function handleNewMessage(data) {
     }
 
     console.log('Found member:', members.id)
+
+    // NEW: Check for opt-out/opt-in keywords BEFORE saving message
+    await checkOptOutOptIn(message, normalizedPhone, members.id)
 
     // Get message text for last_message field
     let messageBody = message.text || ''
