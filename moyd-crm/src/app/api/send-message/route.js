@@ -3,12 +3,17 @@ import { NextResponse } from 'next/server'
 const BB_HOST = process.env.NEXT_PUBLIC_BLUEBUBBLES_HOST
 const BB_PASSWORD = process.env.NEXT_PUBLIC_BLUEBUBBLES_PASSWORD
 
+// ⚡ CRITICAL: Generate unique GUID for each message (from Airtable pattern)
+function generateTempGuid() {
+  return `web_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+}
+
 export async function POST(request) {
   try {
     const body = await request.json()
     const { phone, message, memberId, reaction, replyToGuid, partIndex } = body
 
-    console.log('Send message request:', {
+    console.log('📨 Send message request:', {
       phone,
       hasMessage: !!message,
       hasReaction: !!reaction,
@@ -45,7 +50,7 @@ export async function POST(request) {
       return await sendRegularMessage(chatGuid, message, phone, memberId)
     }
   } catch (error) {
-    console.error('Error in send-message API:', error)
+    console.error('❌ Error in send-message API:', error)
     return NextResponse.json(
       { error: error.message || 'Internal server error' },
       { status: 500 }
@@ -53,60 +58,91 @@ export async function POST(request) {
   }
 }
 
-// Send a regular message
+// ⚡ FIXED: Send a regular message with private-api method
 async function sendRegularMessage(chatGuid, message, phone, memberId) {
-  console.log('Sending regular message via BlueBubbles:', {
+  console.log('📤 Sending regular message via BlueBubbles Private API:', {
     host: BB_HOST,
     chatGuid,
     messageLength: message.length
   })
 
-  // ⚡ CRITICAL FIX: Send via private-api FIRST - this works even without existing chat
-  const response = await fetch(
-    `${BB_HOST}/api/v1/message/text?password=${BB_PASSWORD}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chatGuid: chatGuid,
-        message: message,
-        method: 'private-api', // This enables sending to new numbers
-      }),
-    }
-  )
+  // ⚡ CRITICAL: Generate tempGuid for message tracking
+  const tempGuid = generateTempGuid()
 
-  const result = await response.json()
+  // ⚡ CRITICAL: Use AbortController with timeout (from Airtable pattern)
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 10000) // 10 second timeout
 
-  if (!response.ok || result.status !== 200) {
-    console.error('BlueBubbles API error:', result)
-    return NextResponse.json(
+  try {
+    const response = await fetch(
+      `${BB_HOST}/api/v1/message/text?password=${BB_PASSWORD}`,
       {
-        error: result.error?.message || result.message || 'Failed to send message',
-        details: result
-      },
-      { status: response.status || 500 }
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          chatGuid: chatGuid,
+          message: message,
+          method: 'private-api', // ⚡ CRITICAL: This enables sending to new numbers
+          tempGuid: tempGuid      // ⚡ CRITICAL: Helps track the message
+        }),
+      }
     )
+
+    clearTimeout(timeoutId)
+
+    const result = await response.json()
+
+    console.log('📥 BlueBubbles response:', {
+      status: result.status,
+      ok: response.ok,
+      hasData: !!result.data,
+      hasError: !!result.error
+    })
+
+    if (!response.ok || result.status !== 200) {
+      console.error('❌ BlueBubbles API error:', result)
+      return NextResponse.json(
+        {
+          error: result.error?.message || result.message || 'Failed to send message',
+          details: result
+        },
+        { status: response.status || 500 }
+      )
+    }
+
+    console.log('✅ Message sent successfully via BlueBubbles!')
+
+    // Save to database in background (non-blocking)
+    if (memberId) {
+      saveMessageToDatabase(memberId, chatGuid, message, phone, result, 'outbound')
+        .catch(err => console.error('⚠️ Background DB save error:', err))
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: result.data,
+      tempGuid: tempGuid,
+      message: 'Message sent successfully'
+    })
+  } catch (error) {
+    clearTimeout(timeoutId)
+    
+    if (error.name === 'AbortError') {
+      console.error('⏱️ Request timeout')
+      return NextResponse.json(
+        { error: 'Request timeout - BlueBubbles server may be slow or unavailable' },
+        { status: 408 }
+      )
+    }
+    
+    throw error
   }
-
-  console.log('✅ Message sent successfully via BlueBubbles')
-
-  // THEN save to database in background (non-blocking pattern from Airtable)
-  // We don't await this so the response returns immediately
-  if (memberId) {
-    saveMessageToDatabase(memberId, chatGuid, message, phone, result, 'outbound')
-      .catch(err => console.error('Background DB save error:', err))
-  }
-
-  return NextResponse.json({
-    success: true,
-    data: result.data,
-    message: 'Message sent successfully'
-  })
 }
 
-// Send a reply to a specific message
+// ⚡ FIXED: Send a reply with private-api method
 async function sendReply(chatGuid, message, replyToGuid, phone, memberId, partIndex) {
-  console.log('Sending reply via BlueBubbles:', {
+  console.log('📤 Sending reply via BlueBubbles Private API:', {
     host: BB_HOST,
     chatGuid,
     replyToGuid,
@@ -114,53 +150,74 @@ async function sendReply(chatGuid, message, replyToGuid, phone, memberId, partIn
     messageLength: message.length
   })
 
-  // Send the reply with selectedMessageGuid and partIndex
-  const response = await fetch(
-    `${BB_HOST}/api/v1/message/text?password=${BB_PASSWORD}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chatGuid: chatGuid,
-        message: message,
-        method: 'private-api',
-        selectedMessageGuid: replyToGuid,
-        partIndex: parseInt(partIndex) || 0
-      }),
-    }
-  )
+  const tempGuid = generateTempGuid()
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 10000)
 
-  const result = await response.json()
-
-  if (!response.ok || result.status !== 200) {
-    console.error('BlueBubbles API error:', result)
-    return NextResponse.json(
+  try {
+    const response = await fetch(
+      `${BB_HOST}/api/v1/message/text?password=${BB_PASSWORD}`,
       {
-        error: result.error?.message || result.message || 'Failed to send reply',
-        details: result
-      },
-      { status: response.status || 500 }
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          chatGuid: chatGuid,
+          message: message,
+          method: 'private-api',
+          tempGuid: tempGuid,
+          selectedMessageGuid: replyToGuid,
+          partIndex: parseInt(partIndex) || 0
+        }),
+      }
     )
+
+    clearTimeout(timeoutId)
+
+    const result = await response.json()
+
+    if (!response.ok || result.status !== 200) {
+      console.error('❌ BlueBubbles API error:', result)
+      return NextResponse.json(
+        {
+          error: result.error?.message || result.message || 'Failed to send reply',
+          details: result
+        },
+        { status: response.status || 500 }
+      )
+    }
+
+    console.log('✅ Reply sent successfully via BlueBubbles!')
+
+    // Save to database in background (non-blocking)
+    if (memberId) {
+      saveMessageToDatabase(memberId, chatGuid, message, phone, result, 'outbound', replyToGuid)
+        .catch(err => console.error('⚠️ Background DB save error:', err))
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: result.data,
+      tempGuid: tempGuid,
+      message: 'Reply sent successfully'
+    })
+  } catch (error) {
+    clearTimeout(timeoutId)
+    
+    if (error.name === 'AbortError') {
+      return NextResponse.json(
+        { error: 'Request timeout' },
+        { status: 408 }
+      )
+    }
+    
+    throw error
   }
-
-  console.log('✅ Reply sent successfully via BlueBubbles')
-
-  // Save to database with thread info (non-blocking)
-  if (memberId) {
-    saveMessageToDatabase(memberId, chatGuid, message, phone, result, 'outbound', replyToGuid)
-      .catch(err => console.error('Background DB save error:', err))
-  }
-
-  return NextResponse.json({
-    success: true,
-    data: result.data,
-    message: 'Reply sent successfully'
-  })
 }
 
 // Send a reaction/tapback
 async function sendReaction(chatGuid, messageGuid, reactionType, partIndex, phone, memberId) {
-  console.log('Sending reaction via BlueBubbles:', {
+  console.log('📤 Sending reaction via BlueBubbles:', {
     host: BB_HOST,
     chatGuid,
     messageGuid,
@@ -178,58 +235,12 @@ async function sendReaction(chatGuid, messageGuid, reactionType, partIndex, phon
   
   if (!validReactions.includes(normalizedReaction)) {
     return NextResponse.json(
-      { error: `Invalid reaction type: ${reactionType}. Valid types are: ${validReactions.join(', ')}` },
+      { error: `Invalid reaction type: ${reactionType}. Must be one of: ${validReactions.join(', ')}` },
       { status: 400 }
     )
   }
 
-  // Send reaction using private-api method
-  const response = await fetch(
-    `${BB_HOST}/api/v1/message/react?password=${BB_PASSWORD}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chatGuid: chatGuid,
-        selectedMessageGuid: messageGuid,
-        partIndex: parseInt(partIndex) || 0,
-        reaction: normalizedReaction
-      }),
-    }
-  )
-
-  const result = await response.json()
-
-  if (!response.ok || result.status !== 200) {
-    console.error('BlueBubbles API error:', result)
-    return NextResponse.json(
-      {
-        error: result.error?.message || result.message || 'Failed to send reaction',
-        details: result
-      },
-      { status: response.status || 500 }
-    )
-  }
-
-  console.log('✅ Reaction sent successfully via BlueBubbles')
-
-  // Save reaction to database (non-blocking)
-  if (memberId) {
-    // Get the reaction type code for database
-    const reactionCode = getReactionCode(normalizedReaction)
-    saveReactionToDatabase(memberId, chatGuid, phone, result, messageGuid, reactionCode)
-      .catch(err => console.error('Background DB save error:', err))
-  }
-
-  return NextResponse.json({
-    success: true,
-    data: result.data,
-    message: 'Reaction sent successfully'
-  })
-}
-
-// Helper to get reaction code
-function getReactionCode(reactionType) {
+  // Map reaction names to codes (for database storage)
   const reactionMap = {
     'love': 2000,
     'like': 2001,
@@ -244,13 +255,53 @@ function getReactionCode(reactionType) {
     '-emphasize': 3004,
     '-question': 3005
   }
-  return reactionMap[reactionType.toLowerCase()] || 2000
+
+  const reactionCode = reactionMap[normalizedReaction]
+
+  const response = await fetch(
+    `${BB_HOST}/api/v1/message/react?password=${BB_PASSWORD}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chatGuid: chatGuid,
+        selectedMessageGuid: messageGuid,
+        reaction: normalizedReaction,
+        partIndex: parseInt(partIndex) || 0,
+        method: 'private-api'
+      }),
+    }
+  )
+
+  const result = await response.json()
+
+  if (!response.ok || result.status !== 200) {
+    console.error('❌ BlueBubbles API error:', result)
+    return NextResponse.json(
+      {
+        error: result.error?.message || result.message || 'Failed to send reaction',
+        details: result
+      },
+      { status: response.status || 500 }
+    )
+  }
+
+  console.log('✅ Reaction sent successfully via BlueBubbles!')
+
+  // Save reaction to database (non-blocking)
+  if (memberId) {
+    saveReactionToDatabase(memberId, chatGuid, phone, result, messageGuid, reactionCode)
+      .catch(err => console.error('⚠️ Background DB save error:', err))
+  }
+
+  return NextResponse.json({
+    success: true,
+    data: result.data,
+    message: 'Reaction sent successfully'
+  })
 }
 
-// ⚡ CRITICAL FIX: Improved database save function following Airtable pattern
-// - More resilient conversation creation
-// - Always tries to save the message even if conversation creation has issues
-// - Non-blocking execution (called without await)
+// ⚡ FIXED: Improved database save function (non-blocking, resilient)
 async function saveMessageToDatabase(memberId, chatGuid, messageBody, phone, result, direction, threadOriginatorGuid = null) {
   try {
     const { createClient } = require('@supabase/supabase-js')
@@ -259,18 +310,20 @@ async function saveMessageToDatabase(memberId, chatGuid, messageBody, phone, res
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
     )
 
+    console.log('💾 Saving message to database...')
+
     // Try to find existing conversation
     const { data: existingConv } = await supabase
       .from('conversations')
       .select('id')
       .eq('member_id', memberId)
-      .maybeSingle() // Use maybeSingle instead of single to avoid errors
+      .maybeSingle() // ⚡ Uses maybeSingle to avoid errors
 
     let conversationId = existingConv?.id
 
     // If no conversation exists, try to create one
     if (!conversationId) {
-      console.log('No existing conversation, creating new one for member:', memberId)
+      console.log('🔧 Creating new conversation for member:', memberId)
       
       const { data: newConv, error: convError } = await supabase
         .from('conversations')
@@ -284,9 +337,8 @@ async function saveMessageToDatabase(memberId, chatGuid, messageBody, phone, res
         .maybeSingle()
 
       if (convError) {
-        console.error('⚠️ Error creating conversation (will retry):', convError)
-        // Don't return early - we'll try to save the message anyway below
-        // The webhook will eventually create the conversation when a reply comes in
+        console.error('⚠️ Error creating conversation (will retry later):', convError)
+        // ⚡ Don't return early - continue to save message
       } else if (newConv) {
         conversationId = newConv.id
         console.log('✅ Created new conversation:', conversationId)
@@ -298,11 +350,10 @@ async function saveMessageToDatabase(memberId, chatGuid, messageBody, phone, res
         .update({ last_message_at: new Date().toISOString() })
         .eq('id', conversationId)
         .then(() => console.log('✅ Updated conversation timestamp'))
-        .catch(err => console.error('Error updating conversation:', err))
+        .catch(err => console.error('⚠️ Error updating conversation:', err))
     }
 
-    // ⚡ CRITICAL: Always try to create the message record, even if we don't have a conversation yet
-    // This ensures the message is tracked even if there are temporary database issues
+    // ⚡ Always try to create the message record
     const messageData = {
       body: messageBody,
       direction: direction,
@@ -313,7 +364,7 @@ async function saveMessageToDatabase(memberId, chatGuid, messageBody, phone, res
       is_read: false
     }
 
-    // Add conversation_id if we have one, but don't fail if we don't
+    // Only add conversation_id if we have one
     if (conversationId) {
       messageData.conversation_id = conversationId
     }
@@ -324,13 +375,13 @@ async function saveMessageToDatabase(memberId, chatGuid, messageBody, phone, res
 
     if (msgError) {
       console.error('⚠️ Error creating message record:', msgError)
-      // Log but don't throw - the message was already sent via BlueBubbles
+      // ⚡ Don't throw - message was already sent via BlueBubbles
     } else {
-      console.log('✅ Message saved to database')
+      console.log('✅ Message saved to database!')
     }
   } catch (error) {
     console.error('❌ Database error (message was still sent):', error)
-    // Don't throw - the message was already sent successfully via BlueBubbles
+    // ⚡ Don't throw - message was already sent successfully via BlueBubbles
   }
 }
 
@@ -371,7 +422,7 @@ async function saveReactionToDatabase(memberId, chatGuid, phone, result, associa
     if (msgError) {
       console.error('⚠️ Error creating reaction record:', msgError)
     } else {
-      console.log('✅ Reaction saved to database')
+      console.log('✅ Reaction saved to database!')
     }
   } catch (error) {
     console.error('❌ Database error (reaction was still sent):', error)
