@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, Suspense } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
-import { Search, Paperclip, Image as ImageIcon, X, Send, ArrowLeft, Users, MessageCircle, CheckCircle, AlertCircle, Loader2 } from 'lucide-react'
+import { Search, Paperclip, Image as ImageIcon, X, Send, ArrowLeft, Users, MessageCircle, CheckCircle, AlertCircle, Loader2, Sparkles } from 'lucide-react'
 
 const REACTIONS = [
   { type: 'love', emoji: '❤️', label: 'Love', code: 2000 },
@@ -32,6 +32,7 @@ function MessengerContent() {
   const [isTyping, setIsTyping] = useState(false)
   const [selectedFile, setSelectedFile] = useState(null)
   const [uploadingFile, setUploadingFile] = useState(false)
+  const [sendingIntro, setSendingIntro] = useState(false) // NEW: State for Send Intro button
   const messagesEndRef = useRef(null)
   const messagesContainerRef = useRef(null)
   const pollIntervalRef = useRef(null)
@@ -178,170 +179,209 @@ function MessengerContent() {
     return field
   }
 
-  const formatCommittees = (committees) => {
-    if (!committees || !Array.isArray(committees)) return []
-    return committees.map(c => parseField(c)).filter(Boolean)
+  const formatCommittees = (committee) => {
+    if (!committee) return null
+    if (typeof committee === 'string') {
+      try {
+        const parsed = JSON.parse(committee)
+        if (Array.isArray(parsed)) {
+          return parsed.map(c => c.name || c).join(', ')
+        }
+        return committee
+      } catch {
+        return committee
+      }
+    }
+    if (Array.isArray(committee)) {
+      return committee.map(c => (c && typeof c === 'object' && c.name) ? c.name : c).filter(Boolean).join(', ')
+    }
+    return committee
   }
 
   const loadGroupFilterOptions = () => {
-    let options = []
+    const options = new Set()
     
-    switch (groupFilterType) {
-      case 'county':
-        options = [...new Set(members.map(m => m.county).filter(Boolean))].sort()
-        break
-      case 'congressional_district':
-        options = [...new Set(members.map(m => m.congressional_district).filter(Boolean))].sort()
-        break
-      case 'committee':
-        const allCommittees = members.flatMap(m => m.committee || [])
-        options = [...new Set(allCommittees)].sort()
-        break
-      default:
-        options = []
-    }
+    members.forEach(member => {
+      const value = member[groupFilterType]
+      if (value) {
+        if (Array.isArray(value)) {
+          value.forEach(v => options.add(v))
+        } else {
+          options.add(value)
+        }
+      }
+    })
     
-    setGroupFilterOptions(options)
-    setGroupFilterValue(options.length > 0 ? options[0] : '')
+    setGroupFilterOptions(Array.from(options).sort())
   }
 
   const updateSelectedRecipients = () => {
-    let filtered = []
-    
-    switch (groupFilterType) {
-      case 'county':
-        filtered = members.filter(m => m.county === groupFilterValue && m.phone_e164)
-        break
-      case 'congressional_district':
-        filtered = members.filter(m => m.congressional_district === groupFilterValue && m.phone_e164)
-        break
-      case 'committee':
-        filtered = members.filter(m => m.committee?.includes(groupFilterValue) && m.phone_e164)
-        break
-      default:
-        filtered = []
+    if (groupFilterValue === 'all') {
+      setSelectedRecipients(members.filter(m => m.phone_e164))
+      return
     }
+
+    const filtered = members.filter(member => {
+      const value = member[groupFilterType]
+      if (!value) return false
+      
+      if (Array.isArray(value)) {
+        return value.includes(groupFilterValue)
+      }
+      return value === groupFilterValue
+    }).filter(m => m.phone_e164)
     
     setSelectedRecipients(filtered)
   }
 
-  const handleSendGroupMessage = async () => {
-    if (!groupMessage.trim() || selectedRecipients.length === 0) return
-    
-    setSendingGroupMessage(true)
-    setGroupMessageProgress({ sent: 0, total: selectedRecipients.length, failed: [] })
-    setGroupMessageComplete(false)
-    
-    try {
-      const response = await fetch('/api/send-group-message', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: groupMessage,
-          recipients: selectedRecipients.map(r => ({
-            id: r.id,
-            name: r.name,
-            phone: r.phone_e164
-          }))
-        })
-      })
-      
-      if (!response.ok) throw new Error('Failed to send group message')
-      
-      const result = await response.json()
-      setGroupMessageProgress(result.progress)
-      setGroupMessageThreads(result.threads || [])
-      setGroupMessageComplete(true)
-      setGroupMessage('')
-    } catch (err) {
-      console.error('Error sending group message:', err)
-      setError('Failed to send group message. Please try again.')
-    } finally {
-      setSendingGroupMessage(false)
-    }
-  }
-
-  const checkTypingStatus = async () => {
-    if (!memberId) return
-    
-    try {
-      const { data: convData } = await supabase
-        .from('conversations')
-        .select('is_typing, typing_since')
-        .eq('member_id', memberId)
-        .single()
-
-      if (convData && convData.is_typing) {
-        const typingSince = new Date(convData.typing_since)
-        const now = new Date()
-        const secondsSince = (now - typingSince) / 1000
-
-        if (secondsSince < 10) {
-          setIsTyping(true)
-        } else {
-          setIsTyping(false)
-          await supabase
-            .from('conversations')
-            .update({ is_typing: false, typing_since: null })
-            .eq('member_id', memberId)
-        }
-      } else {
-        setIsTyping(false)
-      }
-    } catch (err) {
-      console.error('Error checking typing status:', err)
-    }
+  const handleMemberSelect = (member) => {
+    router.push(`/messenger?phone=${encodeURIComponent(member.phone_e164)}&name=${encodeURIComponent(member.name)}&memberId=${member.id}`)
   }
 
   const loadMessages = async () => {
     try {
       const response = await fetch(`/api/messages?memberId=${memberId}`)
-      if (response.ok) {
-        const data = await response.json()
-        const processedMessages = processMessages(data.messages || [])
-        setMessages(processedMessages)
-      }
+      if (!response.ok) throw new Error('Failed to load messages')
+      
+      const data = await response.json()
+      setMessages(data.messages || [])
     } catch (err) {
-      console.error('Error loading messages:', err)
+      console.error('Load messages error:', err)
     }
   }
 
-  const processMessages = (rawMessages) => {
-    const messageMap = {}
-    const processedMessages = []
-
-    rawMessages.forEach(msg => {
-      if (msg.associated_message_guid && msg.associated_message_type >= 2000) {
-        if (!messageMap[msg.associated_message_guid]) {
-          messageMap[msg.associated_message_guid] = { reactions: [] }
-        }
-        messageMap[msg.associated_message_guid].reactions.push({
-          type: msg.associated_message_type,
-          direction: msg.direction,
-          created_at: msg.created_at
-        })
-      } else {
-        messageMap[msg.guid] = {
-          ...msg,
-          reactions: messageMap[msg.guid]?.reactions || []
-        }
-        processedMessages.push(messageMap[msg.guid])
-      }
-    })
-
-    return processedMessages
+  const checkTypingStatus = async () => {
+    try {
+      const response = await fetch(`/api/typing-status?phone=${encodeURIComponent(phone)}`)
+      if (!response.ok) return
+      
+      const data = await response.json()
+      setIsTyping(data.isTyping || false)
+    } catch (err) {
+      console.error('Typing status error:', err)
+    }
   }
 
-  const handleFileSelect = async (e) => {
+  const findMessageByGuid = (guid) => {
+    return messages.find(m => m.guid === guid)
+  }
+
+  const hasAttachments = (msg) => {
+    return msg.attachments && msg.attachments.length > 0
+  }
+
+  const getStatusIcon = (msg) => {
+    if (msg.direction !== 'outbound') return null
+    
+    if (msg.error) {
+      return <AlertCircle className="h-3 w-3 text-red-500 ml-1" />
+    }
+    if (msg.date_delivered) {
+      return <CheckCircle className="h-3 w-3 text-blue-400 ml-1" />
+    }
+    return null
+  }
+
+  const handleFileSelect = (e) => {
     const file = e.target.files[0]
-    if (!file) return
-    setSelectedFile(file)
+    if (file) {
+      setSelectedFile(file)
+    }
+  }
+
+  const handleSendGroupMessage = async () => {
+    if (!groupMessage.trim() || selectedRecipients.length === 0) return
+
+    setSendingGroupMessage(true)
+    setGroupMessageProgress({ sent: 0, total: selectedRecipients.length, failed: [] })
+
+    const threads = []
+
+    for (let i = 0; i < selectedRecipients.length; i++) {
+      const recipient = selectedRecipients[i]
+      
+      try {
+        const response = await fetch('/api/send-message', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            phone: recipient.phone_e164,
+            memberId: recipient.id,
+            message: groupMessage,
+          }),
+        })
+
+        if (response.ok) {
+          setGroupMessageProgress(prev => ({ ...prev, sent: prev.sent + 1 }))
+          threads.push({
+            memberId: recipient.id,
+            name: recipient.name,
+            phone: recipient.phone_e164
+          })
+        } else {
+          setGroupMessageProgress(prev => ({ 
+            ...prev, 
+            failed: [...prev.failed, { name: recipient.name, phone: recipient.phone_e164 }] 
+          }))
+        }
+      } catch (error) {
+        console.error(`Failed to send to ${recipient.name}:`, error)
+        setGroupMessageProgress(prev => ({ 
+          ...prev, 
+          failed: [...prev.failed, { name: recipient.name, phone: recipient.phone_e164 }] 
+        }))
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 500))
+    }
+
+    setSendingGroupMessage(false)
+    setGroupMessageComplete(true)
+    setGroupMessageThreads(threads)
+  }
+
+  // NEW: Handler for Send Intro button
+  const handleSendIntro = async () => {
+    if (!phone || !memberId) return
+
+    setSendingIntro(true)
+    setError(null)
+
+    try {
+      const response = await fetch('/api/send-intro', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          recipients: [{
+            phone: phone,
+            memberId: memberId,
+            name: name
+          }]
+        }),
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.error || 'Failed to send intro')
+      }
+
+      const result = await response.json()
+      console.log('Intro sent:', result)
+
+      // Reload messages to show the sent intro
+      await loadMessages()
+      scrollToBottom(true)
+    } catch (err) {
+      console.error('Send intro error:', err)
+      setError(err.message || 'Failed to send intro')
+    } finally {
+      setSendingIntro(false)
+    }
   }
 
   const handleSendMessage = async (e) => {
     e.preventDefault()
-    
-    if (!message.trim() && !selectedFile && !replyingTo) return
+    if ((!message.trim() && !selectedFile && !replyingTo) || loading || uploadingFile) return
 
     setLoading(true)
     setError(null)
@@ -349,11 +389,12 @@ function MessengerContent() {
     try {
       const payload = {
         phone,
-        memberId,
+        memberId
       }
 
       if (selectedFile) {
         setUploadingFile(true)
+        
         const formData = new FormData()
         formData.append('file', selectedFile)
         formData.append('phone', phone)
@@ -368,7 +409,7 @@ function MessengerContent() {
           formData.append('partIndex', '0')
         }
 
-        const response = await fetch('/api/send-attachment', {
+        const response = await fetch('/api/send-message', {
           method: 'POST',
           body: formData,
         })
@@ -379,9 +420,6 @@ function MessengerContent() {
         }
 
         setSelectedFile(null)
-        if (fileInputRef.current) {
-          fileInputRef.current.value = ''
-        }
         setMessage('')
         setReplyingTo(null)
         setUploadingFile(false)
@@ -444,72 +482,31 @@ function MessengerContent() {
   const getReactionEmoji = (reaction) => {
     const reactionType = reaction.type
     const emoji = REACTIONS.find(r => r.code === reactionType)?.emoji
-    return reaction.direction === 'outbound' ? '👤' + emoji : emoji
-  }
-
-  const getStatusIcon = (msg) => {
-    if (msg.direction === 'inbound') return null
-    
-    if (msg.is_read) {
-      return <span className="text-blue-500 text-xs ml-1">✓✓</span>
-    } else if (msg.delivery_status === 'Delivered') {
-      return <span className="text-gray-400 text-xs ml-1">✓✓</span>
-    } else if (msg.delivery_status === 'Sent') {
-      return <span className="text-gray-400 text-xs ml-1">✓</span>
-    }
-    return null
-  }
-
-  const findMessageByGuid = (guid) => {
-    return messages.find(m => m.guid === guid)
-  }
-
-  const handleMemberSelect = (member) => {
-    const memberPhone = member.phone_e164 || member.phone
-    router.push(`/messenger?phone=${encodeURIComponent(memberPhone)}&name=${encodeURIComponent(member.name)}&memberId=${member.id}`)
-  }
-
-  const filteredMembers = members.filter(member => 
-    member.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    member.phone?.includes(searchTerm) ||
-    member.phone_e164?.includes(searchTerm)
-  )
-
-  const hasAttachments = (msg) => {
-    return msg.body === '\ufffc' || msg.body?.includes('\ufffc') || msg.media_url
+    return reaction.direction === 'outbound' ? emoji : `${emoji}👤`
   }
 
   const renderAttachment = (msg) => {
-    if (!msg.media_url) {
-      return <div className="text-sm opacity-75">📎 Attachment</div>
-    }
+    if (!msg.attachments || msg.attachments.length === 0) return null
 
-    const url = msg.media_url
-    const isImage = url.includes('image') || url.match(/\.(jpg|jpeg|png|gif|webp|heic)$/i)
-    const isVideo = url.includes('video') || url.match(/\.(mp4|mov|avi)$/i)
+    const attachment = msg.attachments[0]
+    const url = `/api/attachments/${attachment.id}`
 
-    if (isImage) {
+    if (attachment.mime_type?.startsWith('image/')) {
       return (
-        <a href={url} target="_blank" rel="noopener noreferrer">
-          <img 
-            src={url} 
-            alt="Attachment" 
-            className="max-w-full rounded-lg cursor-pointer hover:opacity-90 transition-opacity"
-            style={{ maxHeight: '300px' }}
-            loading="lazy"
-          />
-        </a>
+        <img 
+          src={url} 
+          alt="attachment" 
+          className="max-w-xs rounded-lg cursor-pointer hover:opacity-90 transition-opacity"
+          onClick={() => window.open(url, '_blank')}
+        />
       )
-    } else if (isVideo) {
+    } else if (attachment.mime_type?.startsWith('video/')) {
       return (
         <video 
           controls 
-          className="max-w-full rounded-lg"
-          style={{ maxHeight: '300px' }}
-        >
-          <source src={url} type="video/mp4" />
-          Your browser doesn't support video playback.
-        </video>
+          className="max-w-xs rounded-lg"
+          src={url}
+        />
       )
     } else {
       return (
@@ -525,6 +522,11 @@ function MessengerContent() {
       )
     }
   }
+
+  const filteredMembers = members.filter(member =>
+    member.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    member.phone_e164?.includes(searchTerm)
+  )
 
   // Main Messenger Home - Show two buttons
   if (!phone && !name && !memberId && !showGroupComposer && !showMemberSelector) {
@@ -607,63 +609,87 @@ function MessengerContent() {
     )
   }
 
-  // Group Message Composer
+  // Group Message Composer Interface
   if (showGroupComposer) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-50 via-white to-pink-50 flex flex-col">
         <div className="bg-white border-b border-gray-200 shadow-sm">
-          <div className="max-w-5xl mx-auto px-4 py-4">
+          <div className="max-w-4xl mx-auto px-4 py-4">
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-4">
-                <button
-                  onClick={() => setShowGroupComposer(false)}
-                  className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
-                >
-                  <ArrowLeft className="h-4 w-4" />
-                  Back
-                </button>
-                <div className="border-l border-gray-300 h-6"></div>
-                <div>
-                  <h1 className="text-xl font-bold text-gray-900 flex items-center gap-2">
-                    <Users className="h-5 w-5 text-purple-600" />
-                    Group Message Composer
-                  </h1>
-                  <p className="text-sm text-gray-600">Send messages to multiple members at once</p>
-                </div>
+              <div>
+                <h1 className="text-2xl font-bold text-gray-900">Group Message Composer</h1>
+                <p className="text-sm text-gray-600 mt-1">Select recipients and send individual messages</p>
               </div>
+              <button
+                onClick={() => setShowGroupComposer(false)}
+                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                <ArrowLeft className="h-4 w-4" />
+                Back
+              </button>
             </div>
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-6">
-          <div className="max-w-5xl mx-auto">
+        <div className="flex-1 p-8 overflow-y-auto">
+          <div className="max-w-4xl mx-auto">
             {!groupMessageComplete ? (
               <div className="space-y-6">
-                {/* Filter Selection Card */}
+                {/* Filter Selection */}
                 <div className="bg-white rounded-2xl shadow-lg p-6 border border-gray-200">
-                  <h2 className="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
-                    <Search className="h-5 w-5 text-purple-600" />
-                    Select Recipients
-                  </h2>
+                  <h2 className="text-lg font-bold text-gray-900 mb-4">Select Recipients</h2>
                   
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {/* Filter Type */}
+                  <div className="space-y-4">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
                         Filter By
                       </label>
-                      <select
-                        value={groupFilterType}
-                        onChange={(e) => setGroupFilterType(e.target.value)}
-                        className="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 text-gray-900 font-medium"
-                      >
-                        <option value="committee">Committee</option>
-                        <option value="county">County</option>
-                        <option value="congressional_district">Congressional District</option>
-                      </select>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => {
+                            setGroupFilterType('committee')
+                            setGroupFilterValue('')
+                            setSelectedRecipients([])
+                          }}
+                          className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                            groupFilterType === 'committee'
+                              ? 'bg-purple-600 text-white'
+                              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                          }`}
+                        >
+                          Committee
+                        </button>
+                        <button
+                          onClick={() => {
+                            setGroupFilterType('county')
+                            setGroupFilterValue('')
+                            setSelectedRecipients([])
+                          }}
+                          className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                            groupFilterType === 'county'
+                              ? 'bg-purple-600 text-white'
+                              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                          }`}
+                        >
+                          County
+                        </button>
+                        <button
+                          onClick={() => {
+                            setGroupFilterType('congressional_district')
+                            setGroupFilterValue('')
+                            setSelectedRecipients([])
+                          }}
+                          className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                            groupFilterType === 'congressional_district'
+                              ? 'bg-purple-600 text-white'
+                              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                          }`}
+                        >
+                          Congressional District
+                        </button>
+                      </div>
                     </div>
 
-                    {/* Filter Value */}
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
                         Select {groupFilterType === 'committee' ? 'Committee' : groupFilterType === 'county' ? 'County' : 'District'}
@@ -671,110 +697,51 @@ function MessengerContent() {
                       <select
                         value={groupFilterValue}
                         onChange={(e) => setGroupFilterValue(e.target.value)}
-                        className="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 text-gray-900 font-medium"
+                        className="w-full px-4 py-2 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 text-gray-900"
                       >
-                        {groupFilterOptions.length === 0 ? (
-                          <option value="">No options available</option>
-                        ) : (
-                          groupFilterOptions.map(option => (
-                            <option key={option} value={option}>{option}</option>
-                          ))
-                        )}
+                        <option value="">Choose...</option>
+                        <option value="all">All Members</option>
+                        {groupFilterOptions.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
                       </select>
                     </div>
-                  </div>
 
-                  {/* Recipient Count */}
-                  {selectedRecipients.length > 0 && (
-                    <div className="mt-4 p-4 bg-purple-50 border border-purple-200 rounded-lg">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                          <Users className="h-5 w-5 text-purple-600" />
-                          <span className="text-sm font-medium text-gray-700">
-                            Ready to send to {selectedRecipients.length} member{selectedRecipients.length !== 1 ? 's' : ''}
-                          </span>
+                    {selectedRecipients.length > 0 && (
+                      <div className="bg-purple-50 rounded-lg p-4 border border-purple-200">
+                        <p className="text-sm font-medium text-purple-900 mb-2">
+                          Selected: {selectedRecipients.length} member{selectedRecipients.length !== 1 ? 's' : ''}
+                        </p>
+                        <div className="max-h-40 overflow-y-auto space-y-1">
+                          {selectedRecipients.slice(0, 10).map((recipient) => (
+                            <div key={recipient.id} className="flex items-center gap-2 text-sm text-purple-700">
+                              <CheckCircle className="h-4 w-4" />
+                              <span>{recipient.name}</span>
+                            </div>
+                          ))}
+                          {selectedRecipients.length > 10 && (
+                            <p className="text-sm text-purple-600 italic">
+                              ...and {selectedRecipients.length - 10} more
+                            </p>
+                          )}
                         </div>
-                        <CheckCircle className="h-5 w-5 text-green-600" />
                       </div>
-                      <div className="mt-2 text-xs text-gray-600">
-                        Messages will be sent individually with delays to prevent spam filtering
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Message Composer Card */}
-                <div className="bg-white rounded-2xl shadow-lg p-6 border border-gray-200">
-                  <h2 className="text-lg font-bold text-gray-900 mb-4">
-                    Compose Message
-                  </h2>
-                  
-                  <textarea
-                    value={groupMessage}
-                    onChange={(e) => setGroupMessage(e.target.value)}
-                    placeholder="Type your message here... This will be sent individually to each member."
-                    className="w-full h-40 px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 text-gray-900 resize-none"
-                    disabled={sendingGroupMessage}
-                  />
-
-                  <div className="mt-4 flex items-center justify-between">
-                    <div className="text-sm text-gray-600">
-                      {groupMessage.length} characters
-                    </div>
-                    <button
-                      onClick={handleSendGroupMessage}
-                      disabled={!groupMessage.trim() || selectedRecipients.length === 0 || sendingGroupMessage}
-                      className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-purple-600 to-pink-600 text-white font-medium rounded-lg hover:from-purple-700 hover:to-pink-700 disabled:from-gray-300 disabled:to-gray-400 disabled:cursor-not-allowed transition-all shadow-lg hover:shadow-xl transform hover:-translate-y-0.5"
-                    >
-                      {sendingGroupMessage ? (
-                        <>
-                          <Loader2 className="h-5 w-5 animate-spin" />
-                          Sending... {groupMessageProgress.sent}/{groupMessageProgress.total}
-                        </>
-                      ) : (
-                        <>
-                          <Send className="h-5 w-5" />
-                          Send to {selectedRecipients.length} Member{selectedRecipients.length !== 1 ? 's' : ''}
-                        </>
-                      )}
-                    </button>
+                    )}
                   </div>
                 </div>
 
-                {/* Progress Indicator */}
-                {sendingGroupMessage && (
+                {/* Preview Recipients - Only show when recipients selected */}
+                {selectedRecipients.length > 0 && (
                   <div className="bg-white rounded-2xl shadow-lg p-6 border border-gray-200">
-                    <h3 className="text-lg font-bold text-gray-900 mb-4">Sending Progress</h3>
-                    <div className="space-y-3">
-                      <div className="w-full bg-gray-200 rounded-full h-3">
-                        <div 
-                          className="bg-gradient-to-r from-purple-600 to-pink-600 h-3 rounded-full transition-all duration-500"
-                          style={{ width: `${(groupMessageProgress.sent / groupMessageProgress.total) * 100}%` }}
-                        ></div>
-                      </div>
-                      <div className="text-sm text-gray-600 text-center">
-                        Sent {groupMessageProgress.sent} of {groupMessageProgress.total} messages
-                      </div>
-                      {groupMessageProgress.failed.length > 0 && (
-                        <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded-lg">
-                          <div className="flex items-center gap-2 text-sm text-red-800">
-                            <AlertCircle className="h-4 w-4" />
-                            Failed to send to {groupMessageProgress.failed.length} recipient(s)
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {/* Recipient Preview */}
-                {selectedRecipients.length > 0 && !sendingGroupMessage && (
-                  <div className="bg-white rounded-2xl shadow-lg p-6 border border-gray-200">
-                    <h3 className="text-lg font-bold text-gray-900 mb-4">Recipients ({selectedRecipients.length})</h3>
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 max-h-96 overflow-y-auto">
+                    <h3 className="text-lg font-bold text-gray-900 mb-4">
+                      Preview Recipients ({selectedRecipients.length})
+                    </h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-60 overflow-y-auto">
                       {selectedRecipients.map((recipient) => (
                         <div key={recipient.id} className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg border border-gray-200">
-                          <div className="w-10 h-10 rounded-full bg-gradient-to-br from-purple-400 to-pink-400 flex items-center justify-center text-white font-semibold">
+                          <div className="w-10 h-10 rounded-full bg-gradient-to-br from-purple-400 to-pink-400 flex items-center justify-center text-white font-semibold text-sm">
                             {recipient.name?.charAt(0) || '?'}
                           </div>
                           <div className="flex-1 min-w-0">
@@ -783,6 +750,43 @@ function MessengerContent() {
                           </div>
                         </div>
                       ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Message Composer */}
+                {selectedRecipients.length > 0 && (
+                  <div className="bg-white rounded-2xl shadow-lg p-6 border border-gray-200">
+                    <h3 className="text-lg font-bold text-gray-900 mb-4">Compose Message</h3>
+                    <textarea
+                      value={groupMessage}
+                      onChange={(e) => setGroupMessage(e.target.value)}
+                      placeholder="Type your message here... This will be sent individually to each member."
+                      className="w-full h-40 px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 text-gray-900 resize-none"
+                      disabled={sendingGroupMessage}
+                    />
+
+                    <div className="mt-4 flex items-center justify-between">
+                      <div className="text-sm text-gray-600">
+                        {groupMessage.length} characters
+                      </div>
+                      <button
+                        onClick={handleSendGroupMessage}
+                        disabled={!groupMessage.trim() || selectedRecipients.length === 0 || sendingGroupMessage}
+                        className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-purple-600 to-pink-600 text-white font-medium rounded-lg hover:from-purple-700 hover:to-pink-700 disabled:from-gray-300 disabled:to-gray-400 disabled:cursor-not-allowed transition-all shadow-lg hover:shadow-xl transform hover:-translate-y-0.5"
+                      >
+                        {sendingGroupMessage ? (
+                          <>
+                            <Loader2 className="h-5 w-5 animate-spin" />
+                            Sending... {groupMessageProgress.sent}/{groupMessageProgress.total}
+                          </>
+                        ) : (
+                          <>
+                            <Send className="h-5 w-5" />
+                            Send to {selectedRecipients.length} Member{selectedRecipients.length !== 1 ? 's' : ''}
+                          </>
+                        )}
+                      </button>
                     </div>
                   </div>
                 )}
@@ -827,14 +831,11 @@ function MessengerContent() {
                               {thread.name?.charAt(0) || '?'}
                             </div>
                             <div className="text-left">
-                              <div className="text-sm font-medium text-gray-900">{thread.name}</div>
-                              <div className="text-xs text-gray-500">{thread.phone}</div>
+                              <div className="font-medium text-gray-900">{thread.name}</div>
+                              <div className="text-sm text-gray-500">{thread.phone}</div>
                             </div>
                           </div>
-                          <div className="flex items-center gap-2 text-purple-600 group-hover:text-purple-700">
-                            <span className="text-sm font-medium">View Thread</span>
-                            <ArrowLeft className="h-4 w-4 rotate-180" />
-                          </div>
+                          <ArrowLeft className="h-5 w-5 text-gray-400 group-hover:text-purple-600 rotate-180 transition-colors" />
                         </button>
                       ))}
                     </div>
@@ -848,20 +849,20 @@ function MessengerContent() {
     )
   }
 
-  // Member Selector (for individual messages)
-  if ((!phone || !name || !memberId) && !showGroupComposer && showMemberSelector) {
+  // Member Selector for Individual Messages
+  if (showMemberSelector) {
     return (
-      <div className="min-h-screen bg-gray-50 flex flex-col">
-        <div className="bg-white border-b border-gray-200">
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 flex flex-col">
+        <div className="bg-white border-b border-gray-200 shadow-sm">
           <div className="max-w-4xl mx-auto px-4 py-4">
             <div className="flex items-center justify-between">
               <div>
-                <h1 className="text-xl font-semibold text-gray-900">Select a Member</h1>
-                <p className="text-sm text-gray-500">Choose who you want to message</p>
+                <h1 className="text-2xl font-bold text-gray-900">Select Member</h1>
+                <p className="text-sm text-gray-600 mt-1">Choose a member to message</p>
               </div>
               <button
                 onClick={() => setShowMemberSelector(false)}
-                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
               >
                 <ArrowLeft className="h-4 w-4" />
                 Back
@@ -870,17 +871,17 @@ function MessengerContent() {
           </div>
         </div>
 
-        <div className="flex-1 overflow-hidden">
-          <div className="max-w-4xl mx-auto px-4 py-6">
-            <div className="mb-4">
+        <div className="flex-1 p-8 overflow-y-auto">
+          <div className="max-w-4xl mx-auto">
+            <div className="mb-6">
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-5 w-5" />
                 <input
                   type="text"
-                  placeholder="Search members by name or phone..."
+                  placeholder="Search by name or phone..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
-                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 text-gray-900"
+                  className="w-full pl-10 pr-4 py-3 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900"
                 />
               </div>
             </div>
@@ -1070,48 +1071,46 @@ function MessengerContent() {
 
       {/* Typing Indicator */}
       {isTyping && (
-        <div className="max-w-4xl mx-auto px-4">
-          <div className="flex items-center gap-2 text-sm text-gray-500">
-            <div className="flex gap-1">
-              <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
-              <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
-              <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+        <div className="px-4 py-2 max-w-4xl mx-auto w-full">
+          <div className="flex items-center space-x-2 text-gray-500 text-sm">
+            <div className="flex space-x-1">
+              <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+              <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+              <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
             </div>
             <span>{name} is typing...</span>
           </div>
         </div>
       )}
 
-      {/* Input Area */}
+      {/* Error Display */}
+      {error && (
+        <div className="px-4 py-2 max-w-4xl mx-auto w-full">
+          <div className="bg-red-50 border border-red-200 rounded-lg p-3 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="h-5 w-5 text-red-600" />
+              <p className="text-sm text-red-600">{error}</p>
+            </div>
+            <button
+              onClick={() => setError(null)}
+              className="text-red-600 hover:text-red-800"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Message Input Area */}
       <div className="bg-white border-t border-gray-200 sticky bottom-0">
         <div className="max-w-4xl mx-auto px-4 py-3">
-          {error && (
-            <div className="mb-2 p-2 bg-red-50 border border-red-200 rounded text-sm text-red-800">
-              {error}
-            </div>
-          )}
-
           {selectedFile && (
-            <div className="mb-2 flex items-center gap-2 p-2 bg-gray-100 rounded-lg">
-              <div className="flex items-center gap-2 flex-1 min-w-0">
-                {selectedFile.type.startsWith('image/') ? (
-                  <ImageIcon className="h-4 w-4 text-gray-500 flex-shrink-0" />
-                ) : (
-                  <Paperclip className="h-4 w-4 text-gray-500 flex-shrink-0" />
-                )}
-                <span className="text-xs text-gray-700 truncate">{selectedFile.name}</span>
-                <span className="text-xs text-gray-500 flex-shrink-0">
-                  ({(selectedFile.size / 1024).toFixed(1)} KB)
-                </span>
-              </div>
+            <div className="mb-2 flex items-center gap-2 bg-gray-100 px-3 py-2 rounded-lg">
+              <Paperclip className="h-4 w-4 text-gray-600" />
+              <span className="text-sm text-gray-700 flex-1 truncate">{selectedFile.name}</span>
               <button
-                onClick={() => {
-                  setSelectedFile(null)
-                  if (fileInputRef.current) {
-                    fileInputRef.current.value = ''
-                  }
-                }}
-                className="ml-2 text-gray-400 hover:text-gray-600"
+                onClick={() => setSelectedFile(null)}
+                className="text-gray-600 hover:text-gray-800"
               >
                 <X className="h-4 w-4" />
               </button>
@@ -1119,9 +1118,9 @@ function MessengerContent() {
           )}
 
           {replyingTo && (
-            <div className="mb-2 p-2 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between">
+            <div className="mb-2 flex items-center gap-2 bg-blue-50 px-3 py-2 rounded-lg border-l-2 border-blue-500">
               <div className="flex-1 min-w-0">
-                <p className="text-xs text-blue-600 font-medium">
+                <p className="text-xs font-medium text-blue-900">
                   Replying to {replyingTo.direction === 'outbound' ? 'yourself' : name}
                 </p>
                 <p className="text-xs text-gray-700 truncate">
@@ -1150,10 +1149,26 @@ function MessengerContent() {
               onClick={() => fileInputRef.current?.click()}
               className="p-2 text-gray-400 hover:text-gray-600 transition-colors"
               title="Attach file"
-              disabled={loading || uploadingFile}
+              disabled={loading || uploadingFile || sendingIntro}
             >
               <Paperclip className="h-5 w-5" />
             </button>
+            
+            {/* NEW: Send Intro Button */}
+            <button
+              type="button"
+              onClick={handleSendIntro}
+              disabled={loading || uploadingFile || sendingIntro}
+              className="p-2 text-purple-500 hover:text-purple-700 transition-colors disabled:text-gray-300"
+              title="Send intro message with contact card"
+            >
+              {sendingIntro ? (
+                <Loader2 className="h-5 w-5 animate-spin" />
+              ) : (
+                <Sparkles className="h-5 w-5" />
+              )}
+            </button>
+
             <div className="flex-1 bg-gray-100 rounded-full px-4 py-2 flex items-center">
               <input
                 type="text"
@@ -1161,7 +1176,7 @@ function MessengerContent() {
                 onChange={(e) => setMessage(e.target.value)}
                 placeholder={selectedFile ? "Add a message (optional)" : (replyingTo ? "Reply..." : "iMessage")}
                 className="flex-1 bg-transparent border-none focus:outline-none text-sm text-gray-900 placeholder-gray-500"
-                disabled={loading || uploadingFile}
+                disabled={loading || uploadingFile || sendingIntro}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault()
@@ -1172,7 +1187,7 @@ function MessengerContent() {
             </div>
             <button
               type="submit"
-              disabled={loading || uploadingFile || (!message.trim() && !selectedFile && !replyingTo)}
+              disabled={loading || uploadingFile || sendingIntro || (!message.trim() && !selectedFile && !replyingTo)}
               className="p-2 bg-blue-500 text-white rounded-full hover:bg-blue-600 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
             >
               {uploadingFile ? (
