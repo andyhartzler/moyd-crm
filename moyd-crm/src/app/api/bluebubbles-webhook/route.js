@@ -169,6 +169,14 @@ async function handleNewMessage(data) {
 
     console.log('Found member:', members.id)
 
+    // Get message text for last_message field
+    let messageBody = message.text || ''
+    
+    // Handle attachment-only messages
+    if (message.hasAttachments && (!messageBody || messageBody.trim() === '')) {
+      messageBody = '\ufffc' // Unicode attachment character
+    }
+
     // Find or create conversation
     const { data: existingConv } = await supabase
       .from('conversations')
@@ -179,9 +187,14 @@ async function handleNewMessage(data) {
     let conversation
     if (existingConv) {
       console.log('Updating existing conversation')
+      // ⚡ FIXED: Update last_message and last_message_at along with updated_at
       const { data: updatedConv } = await supabase
         .from('conversations')
-        .update({ updated_at: new Date().toISOString() })
+        .update({ 
+          updated_at: new Date().toISOString(),
+          last_message: messageBody,
+          last_message_at: new Date(message.dateCreated).toISOString()
+        })
         .eq('id', existingConv.id)
         .select()
         .single()
@@ -193,7 +206,7 @@ async function handleNewMessage(data) {
         .from('conversations')
         .insert({
           member_id: members.id,
-          last_message: message.text || '',
+          last_message: messageBody,
           last_message_at: new Date(message.dateCreated).toISOString()
         })
         .select()
@@ -213,15 +226,6 @@ async function handleNewMessage(data) {
       const attachment = message.attachments[0]
       mediaUrl = `${BB_HOST}/api/v1/attachment/${attachment.guid}/download?password=${BB_PASSWORD}`
       console.log('Message has attachment:', attachment.guid)
-    }
-
-    // Get message text - check for attachment placeholder
-    let messageBody = message.text || ''
-    
-    // ⚠️ IMPORTANT: Handle attachment-only messages
-    if (message.hasAttachments && (!messageBody || messageBody.trim() === '')) {
-      messageBody = '\ufffc' // Unicode attachment character
-      console.log('Set body to attachment placeholder')
     }
 
     // Create the message
