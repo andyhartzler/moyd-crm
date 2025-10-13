@@ -48,10 +48,6 @@ export async function POST(request) {
 
     const chatGuid = phone.includes(';') ? phone : `iMessage;-;${phone}`
 
-    // ==========================================
-    // CORRECT METHOD: multipart/form-data with 'attachment' field
-    // Based on .NET client and BlueBubbles server code
-    // ==========================================
     console.log('📤 Sending attachment via multipart/form-data...')
     
     const fileBuffer = await file.arrayBuffer()
@@ -59,7 +55,7 @@ export async function POST(request) {
     
     const attachmentFormData = new FormData()
     attachmentFormData.append('chatGuid', chatGuid)
-    attachmentFormData.append('name', file.name)  // ⚠️ CRITICAL: BlueBubbles requires this field
+    attachmentFormData.append('name', file.name)  // Required field
     attachmentFormData.append('attachment', blob, file.name)
     attachmentFormData.append('method', 'private-api')
     
@@ -77,7 +73,6 @@ export async function POST(request) {
       {
         method: 'POST',
         body: attachmentFormData,
-        // Don't set Content-Type header - let fetch set it with boundary
       }
     )
 
@@ -115,10 +110,9 @@ export async function POST(request) {
 
     console.log('✅ Attachment sent successfully!')
 
-    // Save to database
-    if (memberId) {
-      await saveAttachmentToDatabase(memberId, chatGuid, phone, result, message, replyToGuid)
-    }
+    // ⚠️ DON'T save to database here - let the webhook handle it
+    // The webhook will receive the sent message and save it properly
+    // This prevents timeout issues
 
     return NextResponse.json({
       success: true,
@@ -131,59 +125,5 @@ export async function POST(request) {
       { error: error.message || 'Internal server error' },
       { status: 500 }
     )
-  }
-}
-
-// Helper function to save attachment message to database
-async function saveAttachmentToDatabase(memberId, chatGuid, phone, result, messageText, replyToGuid) {
-  try {
-    const { createClient } = require('@supabase/supabase-js')
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-    )
-
-    // Find conversation
-    const { data: existingConv } = await supabase
-      .from('conversations')
-      .select('id')
-      .eq('member_id', memberId)
-      .single()
-
-    if (!existingConv) {
-      console.error('Conversation not found')
-      return
-    }
-
-    // Get the attachment URL from the result if available
-    let mediaUrl = null
-    if (result.data?.guid) {
-      // Construct the media URL using the message GUID
-      // We'll need to fetch the message details to get the attachment GUID
-      // For now, we'll leave it null and let the webhook handle it
-    }
-
-    // Create message record
-    const messageBody = messageText || '\ufffc' // Use Unicode attachment character if no text
-
-    const { error: msgError } = await supabase.from('messages').insert({
-      conversation_id: existingConv.id,
-      body: messageBody,
-      direction: 'outbound',
-      delivery_status: 'sent',
-      sender_phone: phone,
-      guid: result.data?.guid || `temp_${Date.now()}`,
-      media_url: mediaUrl, // Will be updated by webhook
-      thread_originator_guid: replyToGuid || null,
-      is_read: false
-    })
-
-    if (msgError) {
-      console.error('Error creating message record:', msgError)
-    } else {
-      console.log('Message saved to database')
-    }
-  } catch (error) {
-    console.error('Database error:', error)
   }
 }
