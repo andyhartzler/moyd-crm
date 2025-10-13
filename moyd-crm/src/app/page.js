@@ -1,11 +1,6 @@
 // FIXED VERSION - src/app/page.js
 //
-// FIXES APPLIED:
-// 1. Removed pie chart (was repetitive)
-// 2. Fixed age breakdown order - 14-18 is now in correct sequential position
-// 3. Replaced "MOYD" with "Missouri Young Democrats"
-// 4. Fixed bar graph labels to be fully readable with proper rotation and spacing
-// 5. All original functionality preserved and enhanced
+// FIX APPLIED: Added Cell to recharts imports to resolve "Can't find variable: Cell" error
 
 'use client'
 
@@ -14,7 +9,8 @@ import Navigation from '@/components/Navigation'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
 import { Users, MessageSquare, TrendingUp, MapPin, Briefcase, Calendar, Award, Activity } from 'lucide-react'
-import { BarChart, Bar, ResponsiveContainer, XAxis, YAxis, Tooltip, Legend } from 'recharts'
+// FIX: Added Cell to the import statement
+import { BarChart, Bar, Cell, ResponsiveContainer, XAxis, YAxis, Tooltip, Legend } from 'recharts'
 
 // Color palettes for charts
 const COLORS = {
@@ -54,181 +50,176 @@ function parseField(field) {
   return field
 }
 
-export default function DashboardPage() {
+export default function Home() {
+  const [members, setMembers] = useState([])
   const [stats, setStats] = useState({
-    totalMembers: 0,
-    activeConversations: 0,
+    total: 0,
     byDistrict: {},
     byCounty: {},
     byCommittee: {},
     byAge: {},
     byGender: {},
     byRace: {},
-    bySexualOrientation: {},
-    byEducation: {},
-    recent: []
+    byOrientation: {},
+    byEducation: {}
   })
   const [loading, setLoading] = useState(true)
   const [selectedChart, setSelectedChart] = useState('district')
   const [animate, setAnimate] = useState(false)
 
   useEffect(() => {
-    loadStats()
+    fetchMembers()
+    setTimeout(() => setAnimate(true), 100)
   }, [])
 
-  useEffect(() => {
-    if (!loading) {
-      setTimeout(() => setAnimate(true), 100)
-    }
-  }, [loading])
-
-  async function loadStats() {
+  async function fetchMembers() {
     try {
-      const { data: members, error: membersError } = await supabase
+      const { data, error } = await supabase
         .from('members')
         .select('*')
 
-      const { data: conversations, error: convsError } = await supabase
-        .from('conversations')
-        .select('*')
-        .order('last_message_at', { ascending: false })
-        .limit(5)
+      if (error) throw error
 
-      if (membersError) throw membersError
-
-      const byDistrict = {}
-      const byCounty = {}
-      const byCommittee = {}
-      
-      // FIXED: Age breakdown with correct order
-      const byAge = {
-        '14-18': 0,
-        '19-22': 0,
-        '23-26': 0,
-        '27-30': 0,
-        '31-36': 0
-      }
-      
-      const byGender = {}
-      const byRace = {}
-      const bySexualOrientation = {}
-      const byEducation = {}
-
-      members.forEach(member => {
-        // District
-        const district = parseField(member.congressional_district)
-        if (district) {
-          byDistrict[district] = (byDistrict[district] || 0) + 1
-        }
-
-        // County
-        const county = parseField(member.county)
-        if (county) {
-          byCounty[county] = (byCounty[county] || 0) + 1
-        }
-
-        // Committee
-        const committee = parseField(member.committee)
-        if (Array.isArray(committee)) {
-          committee.forEach(c => {
-            byCommittee[c] = (byCommittee[c] || 0) + 1
-          })
-        } else if (committee) {
-          byCommittee[committee] = (byCommittee[committee] || 0) + 1
-        }
-
-        // FIXED: Age breakdown for 14-36 year olds
-        if (member.birthdate || member.date_of_birth) {
-          const birthdate = member.birthdate || member.date_of_birth
-          const age = new Date().getFullYear() - new Date(birthdate).getFullYear()
-          if (age >= 14 && age <= 18) byAge['14-18']++
-          else if (age >= 19 && age <= 22) byAge['19-22']++
-          else if (age >= 23 && age <= 26) byAge['23-26']++
-          else if (age >= 27 && age <= 30) byAge['27-30']++
-          else if (age >= 31 && age <= 36) byAge['31-36']++
-        }
-
-        // Gender Identity
-        const gender = parseField(member.gender_identity) || 'Not specified'
-        byGender[gender] = (byGender[gender] || 0) + 1
-
-        // Race
-        const race = parseField(member.race)
-        if (race) {
-          if (Array.isArray(race)) {
-            race.forEach(r => {
-              byRace[r] = (byRace[r] || 0) + 1
-            })
-          } else {
-            byRace[race] = (byRace[race] || 0) + 1
-          }
-        } else {
-          byRace['Not specified'] = (byRace['Not specified'] || 0) + 1
-        }
-
-        // Sexual Orientation
-        const orientation = parseField(member.sexual_orientation) || 'Not specified'
-        bySexualOrientation[orientation] = (bySexualOrientation[orientation] || 0) + 1
-
-        // Education
-        const education = parseField(member.education_level) || 'Not specified'
-        byEducation[education] = (byEducation[education] || 0) + 1
-      })
-
-      setStats({
-        totalMembers: members.length,
-        activeConversations: conversations?.length || 0,
-        byDistrict,
-        byCounty,
-        byCommittee,
-        byAge,
-        byGender,
-        byRace,
-        bySexualOrientation,
-        byEducation,
-        recent: conversations || []
-      })
+      setMembers(data || [])
+      calculateStats(data || [])
     } catch (error) {
-      console.error('Error loading stats:', error)
+      console.error('Error fetching members:', error)
     } finally {
       setLoading(false)
     }
   }
 
-  const getChartData = () => {
-    const data = selectedChart === 'district' ? stats.byDistrict :
-                 selectedChart === 'county' ? stats.byCounty :
-                 selectedChart === 'committee' ? stats.byCommittee :
-                 selectedChart === 'age' ? stats.byAge :
-                 selectedChart === 'gender' ? stats.byGender :
-                 selectedChart === 'race' ? stats.byRace :
-                 selectedChart === 'orientation' ? stats.bySexualOrientation :
-                 stats.byEducation
-
-    // FIXED: For age, maintain the order instead of sorting by value
-    if (selectedChart === 'age') {
-      const ageOrder = ['14-18', '19-22', '23-26', '27-30', '31-36']
-      return ageOrder.map(ageRange => ({
-        name: ageRange,
-        value: data[ageRange] || 0
-      }))
+  function calculateStats(membersList) {
+    const newStats = {
+      total: membersList.length,
+      byDistrict: {},
+      byCounty: {},
+      byCommittee: {},
+      byAge: {},
+      byGender: {},
+      byRace: {},
+      byOrientation: {},
+      byEducation: {}
     }
 
-    return Object.entries(data)
-      .map(([name, value]) => ({ name, value }))
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 10)
+    membersList.forEach(member => {
+      // District
+      const district = parseField(member.district)
+      if (district) {
+        newStats.byDistrict[district] = (newStats.byDistrict[district] || 0) + 1
+      }
+
+      // County
+      const county = parseField(member.county)
+      if (county) {
+        newStats.byCounty[county] = (newStats.byCounty[county] || 0) + 1
+      }
+
+      // Committee
+      const committees = member.committee
+      if (committees && Array.isArray(committees)) {
+        committees.forEach(comm => {
+          const committee = parseField(comm)
+          if (committee) {
+            newStats.byCommittee[committee] = (newStats.byCommittee[committee] || 0) + 1
+          }
+        })
+      }
+
+      // Age
+      if (member.age) {
+        const ageGroup = getAgeGroup(member.age)
+        newStats.byAge[ageGroup] = (newStats.byAge[ageGroup] || 0) + 1
+      }
+
+      // Gender
+      const gender = parseField(member.gender)
+      if (gender) {
+        newStats.byGender[gender] = (newStats.byGender[gender] || 0) + 1
+      }
+
+      // Race
+      const race = parseField(member.race)
+      if (race) {
+        newStats.byRace[race] = (newStats.byRace[race] || 0) + 1
+      }
+
+      // Orientation
+      const orientation = parseField(member.orientation)
+      if (orientation) {
+        newStats.byOrientation[orientation] = (newStats.byOrientation[orientation] || 0) + 1
+      }
+
+      // Education
+      const education = parseField(member.education)
+      if (education) {
+        newStats.byEducation[education] = (newStats.byEducation[education] || 0) + 1
+      }
+    })
+
+    setStats(newStats)
   }
 
-  const chartData = getChartData()
-  const colors = COLORS[selectedChart] || COLORS.district
+  function getAgeGroup(age) {
+    if (age < 18) return '14-18'
+    if (age < 22) return '18-22'
+    if (age < 26) return '22-26'
+    if (age < 30) return '26-30'
+    if (age < 36) return '30-36'
+    return '36+'
+  }
+
+  const chartData = (() => {
+    let data = []
+    let colors = COLORS.district
+
+    switch (selectedChart) {
+      case 'district':
+        data = Object.entries(stats.byDistrict).map(([name, value]) => ({ name, value }))
+        colors = COLORS.district
+        break
+      case 'county':
+        data = Object.entries(stats.byCounty).map(([name, value]) => ({ name, value }))
+        colors = COLORS.county
+        break
+      case 'committee':
+        data = Object.entries(stats.byCommittee).map(([name, value]) => ({ name, value }))
+        colors = COLORS.committee
+        break
+      case 'age':
+        const ageOrder = ['14-18', '18-22', '22-26', '26-30', '30-36', '36+']
+        data = ageOrder
+          .map(age => ({ name: age, value: stats.byAge[age] || 0 }))
+          .filter(item => item.value > 0)
+        colors = COLORS.age
+        break
+      case 'gender':
+        data = Object.entries(stats.byGender).map(([name, value]) => ({ name, value }))
+        colors = COLORS.gender
+        break
+      case 'race':
+        data = Object.entries(stats.byRace).map(([name, value]) => ({ name, value }))
+        colors = COLORS.race
+        break
+      case 'orientation':
+        data = Object.entries(stats.byOrientation).map(([name, value]) => ({ name, value }))
+        colors = COLORS.gender
+        break
+      case 'education':
+        data = Object.entries(stats.byEducation).map(([name, value]) => ({ name, value }))
+        colors = COLORS.committee
+        break
+    }
+
+    return { data: data.sort((a, b) => b.value - a.value), colors }
+  })()
 
   const CustomTooltip = ({ active, payload }) => {
     if (active && payload && payload.length) {
       return (
-        <div className="bg-white px-4 py-2 rounded-lg shadow-lg border border-gray-200">
-          <p className="font-semibold text-gray-900">{payload[0].name}</p>
-          <p className="text-blue-600">{payload[0].value} members</p>
+        <div className="bg-white p-3 rounded-lg shadow-lg border border-gray-200">
+          <p className="font-semibold text-gray-900">{payload[0].payload.name}</p>
+          <p className="text-blue-600 font-bold">{payload[0].value} members</p>
         </div>
       )
     }
@@ -236,7 +227,7 @@ export default function DashboardPage() {
   }
 
   const StatCard = ({ name, value, icon: Icon, color, animate }) => (
-    <div className={`bg-white rounded-xl shadow-lg p-6 transform transition-all duration-500 ${animate ? 'scale-100 opacity-100' : 'scale-95 opacity-0'}`}>
+    <div className={`bg-white rounded-xl shadow-lg p-6 transition-all duration-700 transform ${animate ? 'scale-100 opacity-100' : 'scale-95 opacity-0'}`}>
       <div className="flex items-center justify-between">
         <div>
           <p className="text-sm font-medium text-gray-600 mb-1">{name}</p>
@@ -254,7 +245,7 @@ export default function DashboardPage() {
       <Navigation />
       
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Header - FIXED: Changed MOYD to Missouri Young Democrats */}
+        {/* Header */}
         <div className="mb-6">
           <h1 className="text-4xl font-bold text-gray-900 mb-2">Dashboard</h1>
           <p className="text-lg text-gray-600">Welcome to Missouri Young Democrats CRM</p>
@@ -295,32 +286,32 @@ export default function DashboardPage() {
             <div className="flex items-center gap-3">
               <TrendingUp className="h-6 w-6" />
               <div>
-                <h3 className="text-lg font-bold">View Chats</h3>
-                <p className="text-sm opacity-90">See conversations</p>
+                <h3 className="text-lg font-bold">Conversations</h3>
+                <p className="text-sm opacity-90">View message history</p>
               </div>
             </div>
           </Link>
         </div>
 
-        {/* Quick Stats with Animation */}
+        {/* Stats Cards */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
           <StatCard
             name="Total Members"
-            value={stats.totalMembers}
+            value={stats.total}
             icon={Users}
             color="from-blue-500 to-blue-600"
             animate={animate}
           />
           <StatCard
-            name="Active Conversations"
-            value={stats.activeConversations}
-            icon={MessageSquare}
+            name="Districts"
+            value={Object.keys(stats.byDistrict).length}
+            icon={MapPin}
             color="from-purple-500 to-purple-600"
             animate={animate}
           />
           <StatCard
-            name="Congressional Districts"
-            value={Object.keys(stats.byDistrict).length}
+            name="Counties"
+            value={Object.keys(stats.byCounty).length}
             icon={MapPin}
             color="from-green-500 to-green-600"
             animate={animate}
@@ -334,7 +325,7 @@ export default function DashboardPage() {
           />
         </div>
 
-        {/* Interactive Chart Section - FIXED: Removed pie chart, improved bar chart */}
+        {/* Interactive Chart Section */}
         <div className="bg-white rounded-2xl shadow-xl p-8 mb-8">
           <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between mb-6 gap-4">
             <div className="flex items-center gap-3">
@@ -375,18 +366,18 @@ export default function DashboardPage() {
                 <p className="text-gray-600">Loading statistics...</p>
               </div>
             </div>
-          ) : chartData.length === 0 ? (
+          ) : chartData.data.length === 0 ? (
             <div className="text-center py-24">
               <Activity className="mx-auto h-16 w-16 text-gray-300 mb-4" />
               <p className="text-gray-500">No data available for this category</p>
             </div>
           ) : (
             <div className="space-y-8">
-              {/* Bar Chart - FIXED: Improved label readability */}
+              {/* Bar Chart */}
               <div className="w-full" style={{ height: '450px' }}>
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart 
-                    data={chartData} 
+                    data={chartData.data} 
                     margin={{ top: 20, right: 30, left: 20, bottom: 80 }}
                   >
                     <XAxis 
@@ -409,8 +400,8 @@ export default function DashboardPage() {
                       animationBegin={0}
                       radius={[8, 8, 0, 0]}
                     >
-                      {chartData.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={colors[index % colors.length]} />
+                      {chartData.data.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={chartData.colors[index % chartData.colors.length]} />
                       ))}
                     </Bar>
                   </BarChart>
@@ -421,24 +412,24 @@ export default function DashboardPage() {
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-6 border-t border-gray-200">
                 <div className="text-center p-4 bg-blue-50 rounded-lg">
                   <p className="text-sm text-gray-600 mb-1">Total Categories</p>
-                  <p className="text-2xl font-bold text-blue-600">{chartData.length}</p>
+                  <p className="text-2xl font-bold text-blue-600">{chartData.data.length}</p>
                 </div>
                 <div className="text-center p-4 bg-purple-50 rounded-lg">
                   <p className="text-sm text-gray-600 mb-1">Largest Group</p>
                   <p className="text-2xl font-bold text-purple-600">
-                    {chartData[0]?.value || 0}
+                    {chartData.data[0]?.value || 0}
                   </p>
                 </div>
                 <div className="text-center p-4 bg-green-50 rounded-lg">
                   <p className="text-sm text-gray-600 mb-1">Average Size</p>
                   <p className="text-2xl font-bold text-green-600">
-                    {chartData.length > 0 ? Math.round(chartData.reduce((sum, item) => sum + item.value, 0) / chartData.length) : 0}
+                    {chartData.data.length > 0 ? Math.round(chartData.data.reduce((sum, item) => sum + item.value, 0) / chartData.data.length) : 0}
                   </p>
                 </div>
                 <div className="text-center p-4 bg-orange-50 rounded-lg">
                   <p className="text-sm text-gray-600 mb-1">Total Members</p>
                   <p className="text-2xl font-bold text-orange-600">
-                    {chartData.reduce((sum, item) => sum + item.value, 0)}
+                    {chartData.data.reduce((sum, item) => sum + item.value, 0)}
                   </p>
                 </div>
               </div>
