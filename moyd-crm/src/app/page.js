@@ -1,9 +1,11 @@
 // FIXED VERSION - src/app/page.js
 //
 // FIXES APPLIED:
-// 1. Quick action buttons moved to TOP of page and made SMALLER
-// 2. Age breakdown adjusted for 14-36 year olds (14-18, 19-22, 23-26, 27-30, 31-36)
-// 3. All original functionality preserved
+// 1. Removed pie chart (was repetitive)
+// 2. Fixed age breakdown order - 14-18 is now in correct sequential position
+// 3. Replaced "MOYD" with "Missouri Young Democrats"
+// 4. Fixed bar graph labels to be fully readable with proper rotation and spacing
+// 5. All original functionality preserved and enhanced
 
 'use client'
 
@@ -11,8 +13,8 @@ import { useEffect, useState } from 'react'
 import Navigation from '@/components/Navigation'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
-import { Users, MessageSquare, TrendingUp, MapPin, Briefcase, Calendar, Award, Activity, PieChart as PieChartIcon } from 'lucide-react'
-import { BarChart, Bar, PieChart, Pie, Cell, ResponsiveContainer, XAxis, YAxis, Tooltip, Legend } from 'recharts'
+import { Users, MessageSquare, TrendingUp, MapPin, Briefcase, Calendar, Award, Activity } from 'lucide-react'
+import { BarChart, Bar, ResponsiveContainer, XAxis, YAxis, Tooltip, Legend } from 'recharts'
 
 // Color palettes for charts
 const COLORS = {
@@ -97,7 +99,8 @@ export default function DashboardPage() {
       const byDistrict = {}
       const byCounty = {}
       const byCommittee = {}
-      // FIXED: Age breakdown for 14-36 year olds
+      
+      // FIXED: Age breakdown with correct order
       const byAge = {
         '14-18': 0,
         '19-22': 0,
@@ -105,6 +108,7 @@ export default function DashboardPage() {
         '27-30': 0,
         '31-36': 0
       }
+      
       const byGender = {}
       const byRace = {}
       const bySexualOrientation = {}
@@ -201,6 +205,15 @@ export default function DashboardPage() {
                  selectedChart === 'orientation' ? stats.bySexualOrientation :
                  stats.byEducation
 
+    // FIXED: For age, maintain the order instead of sorting by value
+    if (selectedChart === 'age') {
+      const ageOrder = ['14-18', '19-22', '23-26', '27-30', '31-36']
+      return ageOrder.map(ageRange => ({
+        name: ageRange,
+        value: data[ageRange] || 0
+      }))
+    }
+
     return Object.entries(data)
       .map(([name, value]) => ({ name, value }))
       .sort((a, b) => b.value - a.value)
@@ -241,13 +254,13 @@ export default function DashboardPage() {
       <Navigation />
       
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Header */}
+        {/* Header - FIXED: Changed MOYD to Missouri Young Democrats */}
         <div className="mb-6">
           <h1 className="text-4xl font-bold text-gray-900 mb-2">Dashboard</h1>
-          <p className="text-lg text-gray-600">Welcome to MOYD CRM</p>
+          <p className="text-lg text-gray-600">Welcome to Missouri Young Democrats CRM</p>
         </div>
 
-        {/* FIXED: Quick Action Buttons - NOW AT TOP AND SMALLER */}
+        {/* Quick Action Buttons */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
           <Link
             href="/messenger"
@@ -321,7 +334,7 @@ export default function DashboardPage() {
           />
         </div>
 
-        {/* Interactive Chart Section */}
+        {/* Interactive Chart Section - FIXED: Removed pie chart, improved bar chart */}
         <div className="bg-white rounded-2xl shadow-xl p-8 mb-8">
           <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between mb-6 gap-4">
             <div className="flex items-center gap-3">
@@ -364,23 +377,30 @@ export default function DashboardPage() {
             </div>
           ) : chartData.length === 0 ? (
             <div className="text-center py-24">
-              <PieChartIcon className="mx-auto h-16 w-16 text-gray-300 mb-4" />
+              <Activity className="mx-auto h-16 w-16 text-gray-300 mb-4" />
               <p className="text-gray-500">No data available for this category</p>
             </div>
           ) : (
             <div className="space-y-8">
-              {/* Bar Chart */}
-              <div className="w-full" style={{ height: '400px' }}>
+              {/* Bar Chart - FIXED: Improved label readability */}
+              <div className="w-full" style={{ height: '450px' }}>
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={chartData} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
+                  <BarChart 
+                    data={chartData} 
+                    margin={{ top: 20, right: 30, left: 20, bottom: 80 }}
+                  >
                     <XAxis 
                       dataKey="name" 
                       angle={-45} 
                       textAnchor="end" 
-                      height={100}
-                      tick={{ fontSize: 12 }}
+                      height={120}
+                      interval={0}
+                      tick={{ fontSize: 13, fill: '#374151' }}
+                      tickMargin={10}
                     />
-                    <YAxis />
+                    <YAxis 
+                      tick={{ fontSize: 13, fill: '#374151' }}
+                    />
                     <Tooltip content={<CustomTooltip />} />
                     <Bar 
                       dataKey="value" 
@@ -394,36 +414,6 @@ export default function DashboardPage() {
                       ))}
                     </Bar>
                   </BarChart>
-                </ResponsiveContainer>
-              </div>
-
-              {/* Pie Chart */}
-              <div className="w-full" style={{ height: '400px' }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={chartData}
-                      cx="50%"
-                      cy="50%"
-                      labelLine={false}
-                      label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
-                      outerRadius={120}
-                      fill="#8884d8"
-                      dataKey="value"
-                      animationDuration={1500}
-                      animationBegin={0}
-                    >
-                      {chartData.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={colors[index % colors.length]} />
-                      ))}
-                    </Pie>
-                    <Tooltip content={<CustomTooltip />} />
-                    <Legend 
-                      verticalAlign="bottom" 
-                      height={36}
-                      formatter={(value, entry) => `${value} (${entry.payload.value})`}
-                    />
-                  </PieChart>
                 </ResponsiveContainer>
               </div>
 
