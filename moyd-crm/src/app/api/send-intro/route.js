@@ -85,6 +85,11 @@ Reply STOP to opt out of future messages.`
     const vCardArrayBuffer = await vCardBlob.arrayBuffer()
     const vCardBase64 = Buffer.from(vCardArrayBuffer).toString('base64')
 
+    console.log('📎 vCard generated:', {
+      size: vCardBase64.length,
+      preview: vCardBase64.substring(0, 50) + '...'
+    })
+
     for (const recipient of recipients) {
       let introSendId = null
       
@@ -129,25 +134,27 @@ Reply STOP to opt out of future messages.`
 
         console.log(`📤 Sending intro to ${recipient.name} (${recipient.phone})`)
 
-        // ⚡ FIXED: Changed message_template_id to template_id to match database schema
+        // ⚡ FIXED: Use 'pending' instead of 'sending' to avoid constraint violation
         const { data: introSend, error: introSendError } = await supabase
           .from('intro_sends')
           .insert({
             member_id: recipient.memberId,
-            template_id: messageTemplate?.id || null,  // FIXED: was message_template_id
-            status: 'sending'
+            template_id: messageTemplate?.id || null,
+            status: 'pending'  // FIXED: Changed from 'sending' to 'pending'
           })
           .select()
           .single()
         
         if (introSendError) {
-          console.error('Error creating intro_send record:', introSendError)
+          console.error('⚠️ Error creating intro_send record:', introSendError)
           // Continue anyway - don't let tracking issues prevent message sending
         } else {
           introSendId = introSend.id
+          console.log('✅ Created intro_send record:', introSendId)
         }
 
         // First, send the text message
+        console.log('📨 Step 1: Sending text message...')
         const textResponse = await fetch(
           `${BB_HOST}/api/v1/message/text?password=${BB_PASSWORD}`,
           {
@@ -162,14 +169,21 @@ Reply STOP to opt out of future messages.`
           }
         )
 
-        if (!textResponse.ok) {
-          throw new Error('Failed to send intro message')
+        const textResult = await textResponse.json()
+        console.log('📨 Text response:', textResult)
+
+        if (!textResponse.ok || textResult.status !== 200) {
+          console.error('❌ Text send failed:', textResult)
+          throw new Error(textResult.error?.message || textResult.message || 'Failed to send intro message')
         }
 
-        // Small delay between text and attachment
-        await new Promise(resolve => setTimeout(resolve, 500))
+        console.log('✅ Text message sent successfully')
 
-        // Then, send the vCard as an attachment
+        // Wait a bit before sending attachment
+        await new Promise(resolve => setTimeout(resolve, 1000))
+
+        // ⚡ CRITICAL FIX: BlueBubbles attachment API expects base64 string directly
+        console.log('📎 Step 2: Sending vCard attachment...')
         const attachmentResponse = await fetch(
           `${BB_HOST}/api/v1/message/attachment?password=${BB_PASSWORD}`,
           {
@@ -177,7 +191,7 @@ Reply STOP to opt out of future messages.`
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               chatGuid: chatGuid,
-              attachment: vCardBase64,
+              attachment: vCardBase64,  // Base64 string of the vCard file
               name: 'Missouri Young Democrats.vcf',
               method: 'private-api',
               tempGuid: `intro_vcard_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
@@ -185,21 +199,33 @@ Reply STOP to opt out of future messages.`
           }
         )
 
-        if (!attachmentResponse.ok) {
-          throw new Error('Failed to send contact card')
+        const attachmentResult = await attachmentResponse.json()
+        console.log('📎 Attachment response:', {
+          ok: attachmentResponse.ok,
+          status: attachmentResponse.status,
+          result: attachmentResult
+        })
+
+        if (!attachmentResponse.ok || attachmentResult.status !== 200) {
+          console.error('❌ Attachment send failed:', attachmentResult)
+          throw new Error(attachmentResult.error?.message || attachmentResult.message || 'Failed to send contact card')
         }
 
         console.log(`✅ Intro sent successfully to ${recipient.name}`)
         
         // Update intro_send record to success
         if (introSendId) {
-          await supabase
+          const { error: updateError } = await supabase
             .from('intro_sends')
             .update({ 
               status: 'sent',
-              sent_at: new Date().toISOString()  // Set timestamp explicitly
+              sent_at: new Date().toISOString()
             })
             .eq('id', introSendId)
+          
+          if (updateError) {
+            console.error('⚠️ Failed to update intro_send:', updateError)
+          }
         }
 
         // Track the delivery in contact_card_interactions
@@ -211,6 +237,7 @@ Reply STOP to opt out of future messages.`
               intro_send_id: introSendId,
               interaction_type: 'delivered'
             })
+            .catch(err => console.error('⚠️ Failed to track interaction:', err))
         }
         
         results.push({
@@ -235,6 +262,7 @@ Reply STOP to opt out of future messages.`
               error_message: error.message
             })
             .eq('id', introSendId)
+            .catch(err => console.error('⚠️ Failed to update failure status:', err))
         }
         
         results.push({
@@ -271,7 +299,10 @@ function generateVCard() {
     try {
       const logoBuffer = readFileSync(logoPath)
       logoBase64 = logoBuffer.toString('base64')
-      console.log('✅ Logo loaded successfully')
+      console.log('✅ Logo loaded successfully:', {
+        size: logoBuffer.length,
+        base64Length: logoBase64.length
+      })
     } catch (logoError) {
       console.warn('⚠️ Could not load logo, continuing without it:', logoError.message)
     }
@@ -297,6 +328,12 @@ function generateVCard() {
     vCardLines.push('END:VCARD')
 
     const vCardContent = vCardLines.join('\r\n')
+
+    console.log('📝 vCard generated:', {
+      lines: vCardLines.length,
+      hasPhoto: !!logoBase64,
+      contentLength: vCardContent.length
+    })
 
     // Create Blob
     return new Blob([vCardContent], { type: 'text/vcard' })
