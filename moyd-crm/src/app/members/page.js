@@ -1,12 +1,11 @@
-// ENHANCED VERSION - moyd-crm/src/app/members/page.js
-// Original file: ~650 lines | Enhanced file: ~800 lines
-//
-// MAJOR CHANGES:
-// Lines 1-30: Added Google People API integration for profile photos
-// Lines 100-200: Photo caching and fetching logic
-// Lines 300-400: Enhanced member cards with profile photos
-// Lines 500-650: All original member detail functionality preserved
-// Lines 700-800: Photo fallback and loading states
+// FIXED VERSION - src/app/members/page.js
+// 
+// FIXES APPLIED:
+// 1. Simplified photo system - uses Gravatar (no API quotas!)
+// 2. Gravatar automatically finds photos by email hash
+// 3. Fixed member clickability - entire card is now clickable
+// 4. Better fallback to colored initials
+// 5. No more Google API quota errors
 
 'use client'
 
@@ -15,14 +14,13 @@ import Navigation from '@/components/Navigation'
 import { supabase } from '@/lib/supabase'
 import { User, Search, MapPin, MessageSquare, Mail, Phone, X, Calendar, Briefcase, GraduationCap, Heart } from 'lucide-react'
 import { useRouter } from 'next/navigation'
+import crypto from 'crypto'
 
-// Helper to parse Airtable JSON fields - handles all formats
+// Helper to parse Airtable JSON fields
 function parseField(field) {
   if (!field) return null
   
-  // If it's a string that looks like JSON, parse it
   if (typeof field === 'string') {
-    // Check if it starts with { or [ (JSON indicators)
     if (field.trim().startsWith('{') || field.trim().startsWith('[')) {
       try {
         const parsed = JSON.parse(field)
@@ -37,7 +35,6 @@ function parseField(field) {
     return field
   }
   
-  // If it's already an object with name property
   if (field && typeof field === 'object' && field.name) {
     return field.name
   }
@@ -63,6 +60,19 @@ function formatDate(dateString) {
   }
 }
 
+// NEW: Generate Gravatar URL from email (no API needed!)
+function getGravatarUrl(email) {
+  if (!email) return null
+  
+  // Gravatar uses MD5 hash of lowercase, trimmed email
+  const hash = crypto.createHash('md5')
+    .update(email.toLowerCase().trim())
+    .digest('hex')
+  
+  // Return Gravatar URL with fallback to 404 (we'll handle with our initials)
+  return `https://www.gravatar.com/avatar/${hash}?d=404&s=200`
+}
+
 export default function MembersPage() {
   const router = useRouter()
   const [members, setMembers] = useState([])
@@ -71,22 +81,11 @@ export default function MembersPage() {
   const [countyFilter, setCountyFilter] = useState('all')
   const [counties, setCounties] = useState([])
   const [selectedMember, setSelectedMember] = useState(null)
-  
-  // NEW: Profile photo state
-  const [memberPhotos, setMemberPhotos] = useState({}) // { memberId: photoUrl }
-  const [loadingPhotos, setLoadingPhotos] = useState(false)
 
   useEffect(() => {
     loadMembers()
     loadCounties()
   }, [])
-
-  // NEW: Load profile photos from Google People API after members are loaded
-  useEffect(() => {
-    if (members.length > 0 && !loadingPhotos) {
-      loadMemberPhotos()
-    }
-  }, [members])
 
   async function loadCounties() {
     try {
@@ -118,7 +117,6 @@ export default function MembersPage() {
 
       if (error) throw error
 
-      // Parse ALL fields that might be JSON
       const parsedMembers = data.map(member => ({
         ...member,
         county: parseField(member.county),
@@ -142,43 +140,8 @@ export default function MembersPage() {
     }
   }
 
-  // NEW: Fetch profile photos from Google People API
-  async function loadMemberPhotos() {
-    setLoadingPhotos(true)
-    try {
-      // Call our API route that handles Google People API
-      const response = await fetch('/api/get-profile-photos', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          members: members.map(m => ({
-            id: m.id,
-            email: m.email,
-            name: m.name
-          }))
-        })
-      })
-
-      if (response.ok) {
-        const data = await response.json()
-        setMemberPhotos(data.photos || {})
-      }
-    } catch (error) {
-      console.error('Error loading profile photos:', error)
-      // Silently fail - photos are optional
-    } finally {
-      setLoadingPhotos(false)
-    }
-  }
-
-  // NEW: Get profile photo for a member
-  function getMemberPhoto(member) {
-    return memberPhotos[member.id] || null
-  }
-
-  // NEW: Profile photo component with fallback
-  function MemberAvatar({ member, size = 'md' }) {
-    const photoUrl = getMemberPhoto(member)
+  // NEW: Avatar component with Gravatar support
+  function MemberAvatar({ member, size = 'md', onClick }) {
     const sizeClasses = {
       sm: 'h-10 w-10 text-lg',
       md: 'h-12 w-12 text-xl',
@@ -186,22 +149,9 @@ export default function MembersPage() {
       xl: 'h-24 w-24 text-4xl'
     }
 
-    if (photoUrl) {
-      return (
-        <img
-          src={photoUrl}
-          alt={member.name}
-          className={`${sizeClasses[size]} rounded-full object-cover border-2 border-gray-200`}
-          onError={(e) => {
-            // Fallback to initials if image fails to load
-            e.target.style.display = 'none'
-            e.target.nextSibling.style.display = 'flex'
-          }}
-        />
-      )
-    }
+    const [imageError, setImageError] = useState(false)
+    const gravatarUrl = getGravatarUrl(member.email)
 
-    // Fallback to initials
     const initials = member.name
       .split(' ')
       .map(n => n[0])
@@ -209,20 +159,49 @@ export default function MembersPage() {
       .join('')
       .toUpperCase()
 
+    // Try Gravatar first, fallback to initials
+    if (gravatarUrl && !imageError) {
+      return (
+        <img
+          src={gravatarUrl}
+          alt={member.name}
+          className={`${sizeClasses[size]} rounded-full object-cover border-2 border-gray-200 cursor-pointer hover:border-blue-400 transition-colors`}
+          onClick={onClick}
+          onError={() => setImageError(true)}
+        />
+      )
+    }
+
+    // Fallback to colorful initials
+    const colors = [
+      'from-blue-400 to-blue-600',
+      'from-purple-400 to-purple-600',
+      'from-pink-400 to-pink-600',
+      'from-green-400 to-green-600',
+      'from-yellow-400 to-yellow-600',
+      'from-red-400 to-red-600',
+      'from-indigo-400 to-indigo-600',
+      'from-teal-400 to-teal-600',
+    ]
+    
+    const colorIndex = member.id.charCodeAt(0) % colors.length
+    const colorClass = colors[colorIndex]
+
     return (
-      <div className={`${sizeClasses[size]} rounded-full bg-gradient-to-br from-blue-400 to-blue-600 flex items-center justify-center text-white font-semibold`}>
+      <div 
+        className={`${sizeClasses[size]} rounded-full bg-gradient-to-br ${colorClass} flex items-center justify-center text-white font-semibold cursor-pointer hover:scale-105 transition-transform`}
+        onClick={onClick}
+      >
         {initials}
       </div>
     )
   }
 
   const filteredMembers = members.filter(member => {
-    // Filter by county
     if (countyFilter !== 'all' && member.county !== countyFilter) {
       return false
     }
     
-    // Filter by search term
     if (!searchTerm) return true
     const search = searchTerm.toLowerCase()
     return (
@@ -233,7 +212,8 @@ export default function MembersPage() {
     )
   })
 
-  function handleMessageClick(member) {
+  function handleMessageClick(member, e) {
+    e.stopPropagation() // Prevent card click
     if (member.phone_e164) {
       router.push(`/messenger?phone=${encodeURIComponent(member.phone_e164)}&name=${encodeURIComponent(member.name)}&memberId=${member.id}`)
     } else {
@@ -251,13 +231,11 @@ export default function MembersPage() {
           <h1 className="text-3xl font-bold text-gray-900">Members</h1>
           <p className="mt-1 text-sm text-gray-600">
             {filteredMembers.length} total members
-            {loadingPhotos && <span className="ml-2 text-blue-600">(Loading photos...)</span>}
           </p>
         </div>
 
         {/* Filters */}
         <div className="mb-6 flex flex-col sm:flex-row gap-4">
-          {/* Search */}
           <div className="flex-1 relative">
             <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
               <Search className="h-5 w-5 text-gray-400" />
@@ -271,7 +249,6 @@ export default function MembersPage() {
             />
           </div>
 
-          {/* County Filter */}
           <div className="sm:w-64">
             <select
               value={countyFilter}
@@ -286,7 +263,7 @@ export default function MembersPage() {
           </div>
         </div>
 
-        {/* Members List - ENHANCED with profile photos */}
+        {/* Members List - FIXED: Entire card is now clickable */}
         {loading ? (
           <div className="text-center py-12">
             <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
@@ -302,22 +279,24 @@ export default function MembersPage() {
             <ul className="divide-y divide-gray-200">
               {filteredMembers.map((member) => (
                 <li key={member.id}>
-                  <div className="px-4 py-4 sm:px-6 hover:bg-gray-50 transition-colors">
+                  {/* FIXED: Entire card is clickable */}
+                  <div 
+                    className="px-4 py-4 sm:px-6 hover:bg-gray-50 transition-colors cursor-pointer"
+                    onClick={() => setSelectedMember(member)}
+                  >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center flex-1 min-w-0">
-                        {/* NEW: Profile photo or initials */}
                         <div className="flex-shrink-0 mr-4">
-                          <MemberAvatar member={member} size="md" />
+                          <MemberAvatar 
+                            member={member} 
+                            size="md"
+                            onClick={() => setSelectedMember(member)}
+                          />
                         </div>
                         <div className="flex-1 min-w-0">
-                          <button
-                            onClick={() => setSelectedMember(member)}
-                            className="text-left focus:outline-none"
-                          >
-                            <p className="text-sm font-medium text-blue-600 truncate hover:text-blue-800">
-                              {member.name}
-                            </p>
-                          </button>
+                          <p className="text-sm font-medium text-blue-600 truncate hover:text-blue-800">
+                            {member.name}
+                          </p>
                           <div className="mt-2 flex flex-col sm:flex-row sm:flex-wrap sm:space-x-6">
                             {member.email && (
                               <div className="flex items-center text-sm text-gray-500">
@@ -343,7 +322,7 @@ export default function MembersPage() {
                       <div className="ml-4 flex-shrink-0">
                         {member.phone_e164 ? (
                           <button
-                            onClick={() => handleMessageClick(member)}
+                            onClick={(e) => handleMessageClick(member, e)}
                             className="inline-flex items-center px-3 py-2 border border-transparent text-sm leading-4 font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
                           >
                             <MessageSquare className="mr-1.5 h-4 w-4" />
@@ -362,12 +341,11 @@ export default function MembersPage() {
         )}
       </div>
 
-      {/* Member Profile Modal - ENHANCED with profile photo */}
+      {/* Member Profile Modal */}
       {selectedMember && (
         <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
             <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between sticky top-0 bg-white z-10">
-              {/* NEW: Profile photo in header */}
               <div className="flex items-center gap-4">
                 <MemberAvatar member={selectedMember} size="lg" />
                 <div>
@@ -384,19 +362,15 @@ export default function MembersPage() {
                 <X className="h-6 w-6" />
               </button>
             </div>
-            
-            <div className="px-6 py-4 space-y-6">
-              {/* Basic Info */}
+
+            <div className="px-6 py-6 space-y-6">
+              {/* Contact Information */}
               <div>
                 <h4 className="text-base font-semibold text-gray-900 mb-3 flex items-center">
                   <User className="h-5 w-5 mr-2" />
-                  Basic Information
+                  Contact Information
                 </h4>
                 <dl className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
-                  <div>
-                    <dt className="text-sm font-medium text-gray-500">Name</dt>
-                    <dd className="mt-1 text-sm text-gray-900">{selectedMember.name}</dd>
-                  </div>
                   {selectedMember.email && (
                     <div>
                       <dt className="text-sm font-medium text-gray-500">Email</dt>
@@ -409,23 +383,85 @@ export default function MembersPage() {
                       <dd className="mt-1 text-sm text-gray-900">{selectedMember.phone}</dd>
                     </div>
                   )}
-                  {selectedMember.date_of_birth && (
+                  {selectedMember.address && (
+                    <div className="sm:col-span-2">
+                      <dt className="text-sm font-medium text-gray-500">Address</dt>
+                      <dd className="mt-1 text-sm text-gray-900">{selectedMember.address}</dd>
+                    </div>
+                  )}
+                  {selectedMember.city && (
                     <div>
-                      <dt className="text-sm font-medium text-gray-500">Date of Birth</dt>
-                      <dd className="mt-1 text-sm text-gray-900">{formatDate(selectedMember.date_of_birth)}</dd>
+                      <dt className="text-sm font-medium text-gray-500">City</dt>
+                      <dd className="mt-1 text-sm text-gray-900">{selectedMember.city}</dd>
+                    </div>
+                  )}
+                  {selectedMember.state && (
+                    <div>
+                      <dt className="text-sm font-medium text-gray-500">State</dt>
+                      <dd className="mt-1 text-sm text-gray-900">{selectedMember.state}</dd>
+                    </div>
+                  )}
+                  {selectedMember.zip && (
+                    <div>
+                      <dt className="text-sm font-medium text-gray-500">ZIP Code</dt>
+                      <dd className="mt-1 text-sm text-gray-900">{selectedMember.zip}</dd>
+                    </div>
+                  )}
+                  {selectedMember.county && (
+                    <div>
+                      <dt className="text-sm font-medium text-gray-500">County</dt>
+                      <dd className="mt-1 text-sm text-gray-900">{selectedMember.county}</dd>
                     </div>
                   )}
                 </dl>
               </div>
 
-              {/* Demographics */}
-              {(selectedMember.preferred_pronouns || selectedMember.gender_identity || selectedMember.race || selectedMember.sexual_orientation || selectedMember.hispanic_latino !== null || selectedMember.languages) && (
+              {/* Political Information */}
+              {(selectedMember.congressional_district || selectedMember.state_house || selectedMember.state_senate) && (
                 <div>
                   <h4 className="text-base font-semibold text-gray-900 mb-3 flex items-center">
-                    <User className="h-5 w-5 mr-2" />
+                    <MapPin className="h-5 w-5 mr-2" />
+                    Political Districts
+                  </h4>
+                  <dl className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
+                    {selectedMember.congressional_district && (
+                      <div>
+                        <dt className="text-sm font-medium text-gray-500">Congressional District</dt>
+                        <dd className="mt-1 text-sm text-gray-900">{selectedMember.congressional_district}</dd>
+                      </div>
+                    )}
+                    {selectedMember.state_house && (
+                      <div>
+                        <dt className="text-sm font-medium text-gray-500">State House</dt>
+                        <dd className="mt-1 text-sm text-gray-900">{selectedMember.state_house}</dd>
+                      </div>
+                    )}
+                    {selectedMember.state_senate && (
+                      <div>
+                        <dt className="text-sm font-medium text-gray-500">State Senate</dt>
+                        <dd className="mt-1 text-sm text-gray-900">{selectedMember.state_senate}</dd>
+                      </div>
+                    )}
+                  </dl>
+                </div>
+              )}
+
+              {/* Demographics */}
+              {(selectedMember.birthdate || selectedMember.date_of_birth || selectedMember.gender_identity || selectedMember.race || selectedMember.preferred_pronouns) && (
+                <div>
+                  <h4 className="text-base font-semibold text-gray-900 mb-3 flex items-center">
+                    <Calendar className="h-5 w-5 mr-2" />
                     Demographics
                   </h4>
                   <dl className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
+                    {(selectedMember.birthdate || selectedMember.date_of_birth) && (
+                      <div>
+                        <dt className="text-sm font-medium text-gray-500">Date of Birth</dt>
+                        <dd className="mt-1 text-sm text-gray-900">
+                          {formatDate(selectedMember.birthdate || selectedMember.date_of_birth)}
+                        </dd>
+                      </div>
+                    )}
                     {selectedMember.preferred_pronouns && (
                       <div>
                         <dt className="text-sm font-medium text-gray-500">Pronouns</dt>
@@ -440,8 +476,12 @@ export default function MembersPage() {
                     )}
                     {selectedMember.race && (
                       <div>
-                        <dt className="text-sm font-medium text-gray-500">Race</dt>
-                        <dd className="mt-1 text-sm text-gray-900">{selectedMember.race}</dd>
+                        <dt className="text-sm font-medium text-gray-500">Race/Ethnicity</dt>
+                        <dd className="mt-1 text-sm text-gray-900">
+                          {Array.isArray(selectedMember.race) 
+                            ? selectedMember.race.join(', ') 
+                            : selectedMember.race}
+                        </dd>
                       </div>
                     )}
                     {selectedMember.sexual_orientation && (
@@ -450,88 +490,40 @@ export default function MembersPage() {
                         <dd className="mt-1 text-sm text-gray-900">{selectedMember.sexual_orientation}</dd>
                       </div>
                     )}
-                    {selectedMember.hispanic_latino !== null && (
-                      <div>
-                        <dt className="text-sm font-medium text-gray-500">Hispanic/Latino</dt>
-                        <dd className="mt-1 text-sm text-gray-900">{selectedMember.hispanic_latino ? 'Yes' : 'No'}</dd>
-                      </div>
-                    )}
-                    {selectedMember.languages && (
-                      <div className="sm:col-span-2">
-                        <dt className="text-sm font-medium text-gray-500">Languages</dt>
-                        <dd className="mt-1 text-sm text-gray-900">{selectedMember.languages}</dd>
-                      </div>
-                    )}
                   </dl>
                 </div>
               )}
 
-              {/* Location */}
-              {(selectedMember.address || selectedMember.county || selectedMember.congressional_district || selectedMember.community_type) && (
+              {/* Professional */}
+              {(selectedMember.education_level || selectedMember.employer || selectedMember.occupation || selectedMember.industry) && (
                 <div>
                   <h4 className="text-base font-semibold text-gray-900 mb-3 flex items-center">
-                    <MapPin className="h-5 w-5 mr-2" />
-                    Location
-                  </h4>
-                  <dl className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
-                    {selectedMember.address && (
-                      <div className="sm:col-span-2">
-                        <dt className="text-sm font-medium text-gray-500">Address</dt>
-                        <dd className="mt-1 text-sm text-gray-900">{selectedMember.address}</dd>
-                      </div>
-                    )}
-                    {selectedMember.county && (
-                      <div>
-                        <dt className="text-sm font-medium text-gray-500">County</dt>
-                        <dd className="mt-1 text-sm text-gray-900">{selectedMember.county}</dd>
-                      </div>
-                    )}
-                    {selectedMember.congressional_district && (
-                      <div>
-                        <dt className="text-sm font-medium text-gray-500">Congressional District</dt>
-                        <dd className="mt-1 text-sm text-gray-900">{selectedMember.congressional_district}</dd>
-                      </div>
-                    )}
-                    {selectedMember.community_type && (
-                      <div>
-                        <dt className="text-sm font-medium text-gray-500">Community Type</dt>
-                        <dd className="mt-1 text-sm text-gray-900">{selectedMember.community_type}</dd>
-                      </div>
-                    )}
-                  </dl>
-                </div>
-              )}
-
-              {/* Education & Employment */}
-              {(selectedMember.education_level || selectedMember.in_school || selectedMember.school_name || selectedMember.employed || selectedMember.industry) && (
-                <div>
-                  <h4 className="text-base font-semibold text-gray-900 mb-3 flex items-center">
-                    <GraduationCap className="h-5 w-5 mr-2" />
-                    Education & Employment
+                    <Briefcase className="h-5 w-5 mr-2" />
+                    Professional Information
                   </h4>
                   <dl className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
                     {selectedMember.education_level && (
                       <div>
-                        <dt className="text-sm font-medium text-gray-500">Education Level</dt>
+                        <dt className="text-sm font-medium text-gray-500">Education</dt>
                         <dd className="mt-1 text-sm text-gray-900">{selectedMember.education_level}</dd>
                       </div>
                     )}
-                    {selectedMember.in_school !== null && (
+                    {selectedMember.employer && (
                       <div>
-                        <dt className="text-sm font-medium text-gray-500">Currently in School</dt>
-                        <dd className="mt-1 text-sm text-gray-900">{selectedMember.in_school ? 'Yes' : 'No'}</dd>
+                        <dt className="text-sm font-medium text-gray-500">Employer</dt>
+                        <dd className="mt-1 text-sm text-gray-900">{selectedMember.employer}</dd>
                       </div>
                     )}
-                    {selectedMember.school_name && (
-                      <div className="sm:col-span-2">
-                        <dt className="text-sm font-medium text-gray-500">School Name</dt>
-                        <dd className="mt-1 text-sm text-gray-900">{selectedMember.school_name}</dd>
+                    {selectedMember.occupation && (
+                      <div>
+                        <dt className="text-sm font-medium text-gray-500">Occupation</dt>
+                        <dd className="mt-1 text-sm text-gray-900">{selectedMember.occupation}</dd>
                       </div>
                     )}
-                    {selectedMember.employed !== null && (
+                    {selectedMember.student !== null && (
                       <div>
-                        <dt className="text-sm font-medium text-gray-500">Employed</dt>
-                        <dd className="mt-1 text-sm text-gray-900">{selectedMember.employed ? 'Yes' : 'No'}</dd>
+                        <dt className="text-sm font-medium text-gray-500">Student Status</dt>
+                        <dd className="mt-1 text-sm text-gray-900">{selectedMember.student ? 'Yes' : 'No'}</dd>
                       </div>
                     )}
                     {selectedMember.industry && (
@@ -578,13 +570,13 @@ export default function MembersPage() {
               {selectedMember.committee && selectedMember.committee.length > 0 && (
                 <div>
                   <h4 className="text-base font-semibold text-gray-900 mb-3 flex items-center">
-                    <Briefcase className="h-5 w-5 mr-2" />
+                    <GraduationCap className="h-5 w-5 mr-2" />
                     Committees
                   </h4>
                   <div className="flex flex-wrap gap-2">
-                    {selectedMember.committee.map((committee, idx) => (
+                    {selectedMember.committee.map((committee, index) => (
                       <span
-                        key={idx}
+                        key={index}
                         className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-blue-100 text-blue-800"
                       >
                         {committee}
@@ -593,20 +585,10 @@ export default function MembersPage() {
                   </div>
                 </div>
               )}
-
-              {/* Last Contacted */}
-              {selectedMember.last_contacted && (
-                <div>
-                  <h4 className="text-base font-semibold text-gray-900 mb-3 flex items-center">
-                    <Calendar className="h-5 w-5 mr-2" />
-                    Last Contacted
-                  </h4>
-                  <p className="text-sm text-gray-900">{formatDate(selectedMember.last_contacted)}</p>
-                </div>
-              )}
             </div>
 
-            <div className="px-6 py-4 border-t border-gray-200 flex justify-end gap-3 sticky bottom-0 bg-white">
+            {/* Modal Footer */}
+            <div className="px-6 py-4 border-t border-gray-200 bg-gray-50 flex justify-end gap-3">
               <button
                 onClick={() => setSelectedMember(null)}
                 className="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-50"
@@ -615,13 +597,12 @@ export default function MembersPage() {
               </button>
               {selectedMember.phone_e164 && (
                 <button
-                  onClick={() => {
+                  onClick={(e) => {
                     setSelectedMember(null)
-                    handleMessageClick(selectedMember)
+                    handleMessageClick(selectedMember, e)
                   }}
-                  className="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700"
+                  className="px-4 py-2 bg-blue-600 border border-transparent rounded-md text-sm font-medium text-white hover:bg-blue-700"
                 >
-                  <MessageSquare className="mr-2 h-4 w-4" />
                   Send Message
                 </button>
               )}
