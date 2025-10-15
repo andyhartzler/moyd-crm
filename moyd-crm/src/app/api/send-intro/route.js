@@ -22,6 +22,7 @@ const CONTACT_INFO = {
   website: 'https://moyoungdemocrats.org',
   address: {
     poBox: '',
+    extendedAddress: '',  // Apartment/suite number (empty but needed for vCard format)
     street: 'PO Box 270043',
     city: 'Kansas City',
     state: 'Missouri',
@@ -127,7 +128,7 @@ Reply STOP to opt out of future messages.`
 
         console.log(`📤 Sending intro to ${recipient.name} (${recipient.phone})`)
 
-        // Create intro_send record (✅ FIXED: Only columns that exist)
+        // Create intro_send record
         const { data: introSend, error: introSendError } = await supabase
           .from('intro_sends')
           .insert({
@@ -174,10 +175,10 @@ Reply STOP to opt out of future messages.`
         // Small delay between text and attachment
         await new Promise(resolve => setTimeout(resolve, 1000))
 
-        // Step 2: Send vCard attachment using FormData (✅ FIXED: Like send-attachment route)
+        // Step 2: Send vCard attachment using FormData
         console.log('📎 Step 2: Sending vCard attachment...')
         
-        // Create FormData for the attachment (matches send-attachment pattern)
+        // Create FormData for the attachment
         const attachmentFormData = new FormData()
         attachmentFormData.append('chatGuid', chatGuid)
         attachmentFormData.append('name', 'Missouri Young Democrats.vcf')
@@ -191,7 +192,7 @@ Reply STOP to opt out of future messages.`
           `${BB_HOST}/api/v1/message/attachment?password=${BB_PASSWORD}`,
           {
             method: 'POST',
-            body: attachmentFormData,  // ✅ FormData, not JSON!
+            body: attachmentFormData,
           }
         )
 
@@ -319,16 +320,17 @@ function generateVCard() {
     }
 
     // Build vCard content
+    // ✅ FIXED: vCard ADR has 7 components (was missing extended-address)
     const vCardLines = [
       'BEGIN:VCARD',
       'VERSION:3.0',
       `FN:${CONTACT_INFO.name}`,
-      `N:${CONTACT_INFO.lastName};${CONTACT_INFO.firstName};;;`,
-      `ORG:${CONTACT_INFO.organization}`,
+      `ORG:${CONTACT_INFO.name}`,
       `TEL;TYPE=CELL:${CONTACT_INFO.phone}`,
       `EMAIL;TYPE=INTERNET:${CONTACT_INFO.email}`,
       `URL:${CONTACT_INFO.website}`,
-      `ADR;TYPE=WORK:${CONTACT_INFO.address.poBox};${CONTACT_INFO.address.street};${CONTACT_INFO.address.city};${CONTACT_INFO.address.state};${CONTACT_INFO.address.zip};${CONTACT_INFO.address.country}`
+      // ADR format: poBox;extendedAddress;street;city;region;postalCode;country
+      `ADR;TYPE=WORK:${CONTACT_INFO.address.poBox};${CONTACT_INFO.address.extendedAddress};${CONTACT_INFO.address.street};${CONTACT_INFO.address.city};${CONTACT_INFO.address.state};${CONTACT_INFO.address.zip};${CONTACT_INFO.address.country}`
     ]
 
     // Add photo if logo was loaded successfully
