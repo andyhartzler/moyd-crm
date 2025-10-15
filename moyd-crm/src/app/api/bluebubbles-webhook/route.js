@@ -77,31 +77,32 @@ async function handleOutboundMessageUpdate(message) {
       if (recentMessages && recentMessages.length > 0) {
         // 🔥 IMPROVED MATCHING LOGIC
         
-        // Strategy 1: Match attachment-only messages (empty body)
+        // Strategy 1: Match attachment-only messages (empty or \ufffc body)
         if (hasAttachments && !hasText) {
-          console.log('🔍 Looking for temp attachment message (empty body)...')
+          console.log('🔍 Looking for temp attachment message (empty/attachment body)...')
           
-          // Find temp messages with empty or null body
+          // Find temp messages with empty body or attachment character
           existingMessage = recentMessages.find(m => 
-            (!m.body || m.body.trim() === '') &&
+            (!m.body || m.body.trim() === '' || m.body === '\ufffc') &&
             (m.guid.includes('temp-intro-vcard') || m.guid.includes('temp_attachment'))
           )
           
           if (existingMessage) {
-            console.log('✅ Matched ATTACHMENT message by empty body pattern')
+            console.log('✅ Matched ATTACHMENT message by empty/\ufffc body pattern')
           }
         }
         
-        // Strategy 2: Match text messages by content
+        // Strategy 2: Match text messages by exact content
         if (!existingMessage && hasText) {
           console.log('🔍 Looking for temp text message by content...')
           
+          // Match by exact text content
           existingMessage = recentMessages.find(m => 
             m.body && m.body.trim() === message.text.trim()
           )
           
           if (existingMessage) {
-            console.log('✅ Matched TEXT message by content')
+            console.log('✅ Matched TEXT message by exact content')
           }
         }
         
@@ -113,16 +114,16 @@ async function handleOutboundMessageUpdate(message) {
             // Look for vcard temp messages
             existingMessage = recentMessages.find(m => 
               m.guid.includes('temp-intro-vcard') || 
-              (m.guid.includes('temp') && (!m.body || m.body.trim() === ''))
+              (m.guid.includes('temp') && (!m.body || m.body.trim() === '' || m.body === '\ufffc'))
             )
             if (existingMessage) {
               console.log('✅ Matched by vcard GUID pattern')
             }
           } else if (hasText) {
-            // Look for text temp messages
+            // Look for text temp messages (avoid matching ones with empty body)
             existingMessage = recentMessages.find(m => 
               m.guid.includes('temp-intro-text') ||
-              (m.guid.includes('temp') && m.body && m.body.trim().length > 0)
+              (m.guid.includes('temp') && m.body && m.body.trim().length > 0 && m.body !== '\ufffc')
             )
             if (existingMessage) {
               console.log('✅ Matched by text GUID pattern')
@@ -130,18 +131,18 @@ async function handleOutboundMessageUpdate(message) {
           }
         }
 
-        // Strategy 4: Last resort - match by timing, but only if types match
+        // Strategy 4: Last resort - match by timing and type
         if (!existingMessage && recentMessages.length > 0) {
           console.log('⚠️ Using timing match as last resort')
           
           // Filter to messages that match the type (text vs attachment)
           const matchingTypeMessages = recentMessages.filter(m => {
             if (hasAttachments && !hasText) {
-              // Incoming is attachment-only, match to empty body messages
-              return !m.body || m.body.trim() === ''
+              // Incoming is attachment-only, match to empty/\ufffc body messages
+              return !m.body || m.body.trim() === '' || m.body === '\ufffc'
             } else if (hasText) {
               // Incoming has text, match to non-empty body messages  
-              return m.body && m.body.trim().length > 0
+              return m.body && m.body.trim().length > 0 && m.body !== '\ufffc'
             }
             return true
           })
@@ -164,7 +165,7 @@ async function handleOutboundMessageUpdate(message) {
       }
     }
 
-    // Now update the message with delivery status AND attachments
+    // Now update the message with delivery status
     if (existingMessage) {
       const updateData = {
         delivery_status: 'delivered'
@@ -177,17 +178,6 @@ async function handleOutboundMessageUpdate(message) {
       if (message.dateRead) {
         updateData.is_read = true
         updateData.date_read = new Date(message.dateRead).toISOString()
-      }
-
-      // 🔥 CRITICAL FIX: Add attachments data if present
-      if (message.hasAttachments && message.attachments && message.attachments.length > 0) {
-        updateData.attachments = message.attachments.map(att => ({
-          guid: att.guid,
-          transfer_name: att.transferName,
-          mime_type: att.mimeType,
-          total_bytes: att.totalBytes
-        }))
-        console.log('📎 Adding', updateData.attachments.length, 'attachment(s) to message')
       }
 
       const { error } = await supabase
@@ -286,11 +276,7 @@ async function handleIncomingReaction(message) {
       created_at: new Date(message.dateCreated).toISOString()
     }
 
-    console.log('💾 Saving reaction to database:', {
-      guid: reactionData.guid,
-      associated_guid: reactionData.associated_message_guid,
-      type: reactionData.associated_message_type
-    })
+    console.log('💾 Saving reaction to database')
 
     const { error } = await supabase
       .from('messages')
@@ -519,18 +505,6 @@ async function handleNewMessage(message) {
       return
     }
 
-    // Build attachments array
-    let attachments = []
-    if (message.attachments && message.attachments.length > 0) {
-      attachments = message.attachments.map(att => ({
-        guid: att.guid,
-        transfer_name: att.transferName,
-        mime_type: att.mimeType,
-        total_bytes: att.totalBytes
-      }))
-      console.log('Message has', attachments.length, 'attachment(s)')
-    }
-
     // Create the message
     const messageData = {
       conversation_id: conversation.id,
@@ -552,10 +526,6 @@ async function handleNewMessage(message) {
     }
     if (message.threadOriginatorGuid) {
       messageData.thread_originator_guid = message.threadOriginatorGuid
-    }
-    if (attachments.length > 0) {
-      messageData.attachments = attachments
-      console.log('Saved', attachments.length, 'attachments to message')
     }
     if (message.dateDelivered) {
       messageData.date_delivered = new Date(message.dateDelivered).toISOString()
