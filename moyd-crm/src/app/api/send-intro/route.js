@@ -11,19 +11,19 @@ const supabase = createClient(
 const BB_HOST = process.env.NEXT_PUBLIC_BLUEBUBBLES_HOST
 const BB_PASSWORD = process.env.NEXT_PUBLIC_BLUEBUBBLES_PASSWORD
 
-// Contact information for the vCard
+// ✅ CORRECT Contact information for the vCard (from screenshot)
 const CONTACT_INFO = {
   name: 'Missouri Young Democrats',
-  phone: '+18168983610',
-  email: 'info@moyoungdems.org',
-  website: 'https://www.moyoungdems.org',
+  phone: '+18165300773',  // ✅ CORRECT: +1 (816) 530-0773
+  email: 'info@moyoungdemocrats.org',
+  website: 'https://moyoungdemocrats.org',
   address: {
-    street: '615 E 13th St',
+    street: '',  // No street address
     city: 'Kansas City',
-    state: 'MO',
-    zip: '64106',
-    country: 'USA',
-    poBox: '',
+    state: 'Missouri',
+    zip: '64127',  // ✅ CORRECT: 64127, not 64106
+    country: 'United States',
+    poBox: 'PO Box 270043',  // ✅ CORRECT: PO Box 270043
     extendedAddress: ''
   }
 }
@@ -77,6 +77,39 @@ export async function POST(request) {
 
         console.log(`📤 Sending intro to ${recipient.name} (${recipient.phone})`)
 
+        // Get or create conversation
+        let conversationId
+        const { data: existingConv } = await supabase
+          .from('conversations')
+          .select('id')
+          .eq('member_id', recipient.memberId)
+          .maybeSingle()
+
+        if (existingConv) {
+          conversationId = existingConv.id
+          // Update conversation timestamp
+          await supabase
+            .from('conversations')
+            .update({ 
+              updated_at: new Date().toISOString(),
+              last_message: introMessage,
+              last_message_at: new Date().toISOString()
+            })
+            .eq('id', conversationId)
+        } else {
+          const { data: newConv } = await supabase
+            .from('conversations')
+            .insert({
+              member_id: recipient.memberId,
+              last_message: introMessage,
+              last_message_at: new Date().toISOString()
+            })
+            .select()
+            .single()
+          
+          conversationId = newConv.id
+        }
+
         // Create intro_send record
         const { data: introSend, error: introSendError } = await supabase
           .from('intro_sends')
@@ -95,48 +128,6 @@ export async function POST(request) {
 
         introSendId = introSend.id
         console.log(`✅ Created intro_send record: ${introSendId}`)
-
-        // Find or create conversation
-        let conversationId
-        const { data: existingConv } = await supabase
-          .from('conversations')
-          .select('id')
-          .eq('member_id', recipient.memberId)
-          .maybeSingle()
-
-        if (existingConv) {
-          conversationId = existingConv.id
-          // Update conversation with latest message
-          await supabase
-            .from('conversations')
-            .update({
-              last_message: introMessage,
-              last_message_at: new Date().toISOString(),
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', conversationId)
-          console.log('📝 Updated existing conversation:', conversationId)
-        } else {
-          // Create new conversation
-          const { data: newConv, error: convError } = await supabase
-            .from('conversations')
-            .insert({
-              member_id: recipient.memberId,
-              chat_identifier: chatGuid,
-              last_message: introMessage,
-              last_message_at: new Date().toISOString()
-            })
-            .select('id')
-            .single()
-
-          if (convError) {
-            console.error('Error creating conversation:', convError)
-            throw new Error('Failed to create conversation')
-          }
-
-          conversationId = newConv.id
-          console.log('✅ Created new conversation:', conversationId)
-        }
 
         // Step 1: Send text message
         console.log('📨 Step 1: Sending text message...')
@@ -165,7 +156,7 @@ export async function POST(request) {
 
         console.log('✅ Text message sent successfully')
 
-        // 🔥 NEW: Save text message to database immediately
+        // Save text message to database
         const textMessageGuid = textResult.data?.guid || textTempGuid
         const { error: textMsgError } = await supabase
           .from('messages')
@@ -177,7 +168,6 @@ export async function POST(request) {
             sender_phone: recipient.phone,
             guid: textMessageGuid,
             is_read: true,
-            has_attachments: false,
             created_at: new Date().toISOString()
           })
 
@@ -188,16 +178,24 @@ export async function POST(request) {
         }
 
         // Small delay between text and attachment
-        await new Promise(resolve => setTimeout(resolve, 1000))
+        await new Promise(resolve => setTimeout(resolve, 1500))
 
         // Step 2: Send vCard attachment using FormData
         console.log('📎 Step 2: Sending vCard attachment...')
         
+        // Convert Blob to File for BlueBubbles
+        const fileBuffer = await vCardBlob.arrayBuffer()
+        const vCardFile = new File([fileBuffer], 'Missouri Young Democrats.vcf', { 
+          type: 'text/vcard',
+          lastModified: Date.now()
+        })
+        
         const attachmentFormData = new FormData()
         attachmentFormData.append('chatGuid', chatGuid)
         attachmentFormData.append('name', 'Missouri Young Democrats.vcf')
-        attachmentFormData.append('attachment', vCardBlob, 'Missouri Young Democrats.vcf')
+        attachmentFormData.append('attachment', vCardFile)
         attachmentFormData.append('method', 'private-api')
+        
         const vCardTempGuid = `intro_vcard_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
         attachmentFormData.append('tempGuid', vCardTempGuid)
 
@@ -213,12 +211,18 @@ export async function POST(request) {
 
         // Try to parse response
         let attachmentResult
+        const responseText = await attachmentResponse.text()
+        
         try {
-          attachmentResult = await attachmentResponse.json()
+          attachmentResult = JSON.parse(responseText)
         } catch (e) {
-          // If response isn't JSON, treat as success (BlueBubbles might not respond properly)
-          console.log('⚠️ Attachment response not JSON, assuming success')
-          attachmentResult = { status: 200 }
+          console.log('⚠️ Attachment response not JSON:', responseText.substring(0, 200))
+          // If BlueBubbles didn't respond with JSON but request was accepted, treat as success
+          if (attachmentResponse.ok || attachmentResponse.status === 200) {
+            attachmentResult = { status: 200 }
+          } else {
+            throw new Error(`BlueBubbles response error: ${attachmentResponse.status}`)
+          }
         }
 
         console.log('📎 Attachment response:', {
@@ -227,14 +231,15 @@ export async function POST(request) {
           result: attachmentResult
         })
 
-        if (!attachmentResponse.ok || (attachmentResult.status && attachmentResult.status !== 200)) {
+        // Check if attachment send was successful
+        if (!attachmentResponse.ok && !(attachmentResult.status && attachmentResult.status === 200)) {
           console.error('❌ Attachment send failed:', attachmentResult)
           throw new Error(attachmentResult.error?.message || attachmentResult.message || 'Failed to send contact card')
         }
 
         console.log(`✅ Intro sent successfully to ${recipient.name}`)
 
-        // 🔥 NEW: Save vCard attachment message to database immediately
+        // Save vCard attachment message to database
         const vCardMessageGuid = attachmentResult.data?.guid || vCardTempGuid
         const { error: vCardMsgError } = await supabase
           .from('messages')
@@ -246,7 +251,6 @@ export async function POST(request) {
             sender_phone: recipient.phone,
             guid: vCardMessageGuid,
             is_read: true,
-            has_attachments: true,
             created_at: new Date().toISOString()
           })
 
@@ -255,78 +259,48 @@ export async function POST(request) {
         } else {
           console.log('✅ vCard message saved to database!')
         }
-        
-        // Update intro_send record to success
-        if (introSendId) {
-          const { error: updateError } = await supabase
-            .from('intro_sends')
-            .update({ 
-              status: 'sent',
-              sent_at: new Date().toISOString()
-            })
-            .eq('id', introSendId)
-          
-          if (updateError) {
-            console.error('⚠️ Failed to update intro_send:', updateError)
-          }
-        }
 
-        // Track the delivery in contact_card_interactions
-        if (introSendId) {
-          const { error: interactionError } = await supabase
-            .from('contact_card_interactions')
-            .insert({
-              member_id: recipient.memberId,
-              intro_send_id: introSendId,
-              interaction_type: 'delivered'
-            })
-          
-          if (interactionError) {
-            console.error('⚠️ Failed to track interaction:', interactionError)
-          }
-        }
-        
-        results.push({
-          recipient: recipient.name,
-          phone: recipient.phone,
-          success: true
-        })
+        // Update intro_send status to completed
+        await supabase
+          .from('intro_sends')
+          .update({ status: 'sent', sent_at: new Date().toISOString() })
+          .eq('id', introSendId)
+
         successCount++
-
-        // Delay between recipients to avoid rate limiting
-        await new Promise(resolve => setTimeout(resolve, 1000))
+        results.push({
+          phone: recipient.phone,
+          name: recipient.name,
+          status: 'success',
+          message: 'Intro sent successfully'
+        })
 
       } catch (error) {
         console.error(`❌ Failed to send intro to ${recipient.name}:`, error)
+        failCount++
         
-        // Update intro_send record to failed
+        // Update intro_send status to failed if it was created
         if (introSendId) {
-          const { error: updateError } = await supabase
+          await supabase
             .from('intro_sends')
             .update({ 
               status: 'failed',
-              error_message: error.message
+              error_message: error.message 
             })
             .eq('id', introSendId)
-          
-          if (updateError) {
-            console.error('⚠️ Failed to update failure status:', updateError)
-          }
         }
-        
+
         results.push({
-          recipient: recipient.name,
           phone: recipient.phone,
-          success: false,
+          name: recipient.name,
+          status: 'failed',
           error: error.message
         })
-        failCount++
       }
     }
 
     return NextResponse.json({
-      success: true,
-      message: `Intro sent to ${successCount} recipient(s)${failCount > 0 ? ` (${failCount} failed/skipped)` : ''}`,
+      success: successCount > 0,
+      message: `Sent ${successCount} intro(s) successfully${failCount > 0 ? ` (${failCount} failed/skipped)` : ''}`,
       results
     })
 
@@ -356,7 +330,7 @@ function generateVCard() {
       console.warn('⚠️ Could not load logo, continuing without it:', logoError.message)
     }
 
-    // Build vCard content
+    // Build vCard content with CORRECT address
     const vCardLines = [
       'BEGIN:VCARD',
       'VERSION:3.0',
@@ -365,7 +339,7 @@ function generateVCard() {
       `TEL;TYPE=CELL:${CONTACT_INFO.phone}`,
       `EMAIL;TYPE=INTERNET:${CONTACT_INFO.email}`,
       `URL:${CONTACT_INFO.website}`,
-      // ADR format: poBox;extendedAddress;street;city;region;postalCode;country
+      // ✅ CORRECT ADDRESS: ADR format: poBox;extendedAddress;street;city;region;postalCode;country
       `ADR;TYPE=WORK:${CONTACT_INFO.address.poBox};${CONTACT_INFO.address.extendedAddress};${CONTACT_INFO.address.street};${CONTACT_INFO.address.city};${CONTACT_INFO.address.state};${CONTACT_INFO.address.zip};${CONTACT_INFO.address.country}`
     ]
 
@@ -378,10 +352,13 @@ function generateVCard() {
 
     const vCardContent = vCardLines.join('\r\n')
 
-    console.log('📝 vCard generated:', {
+    console.log('📝 vCard generated with CORRECT address:', {
       lines: vCardLines.length,
       hasPhoto: !!logoBase64,
-      contentLength: vCardContent.length
+      contentLength: vCardContent.length,
+      phone: CONTACT_INFO.phone,
+      poBox: CONTACT_INFO.address.poBox,
+      zip: CONTACT_INFO.address.zip
     })
 
     // Create Blob (for FormData)
