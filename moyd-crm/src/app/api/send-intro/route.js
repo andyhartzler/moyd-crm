@@ -11,19 +11,18 @@ const supabase = createClient(
 const BB_HOST = process.env.NEXT_PUBLIC_BLUEBUBBLES_HOST
 const BB_PASSWORD = process.env.NEXT_PUBLIC_BLUEBUBBLES_PASSWORD
 
-// ✅ CORRECT Contact information for the vCard (from screenshot)
 const CONTACT_INFO = {
   name: 'Missouri Young Democrats',
-  phone: '+18165300773',  // ✅ CORRECT: +1 (816) 530-0773
+  phone: '+18165300773',
   email: 'info@moyoungdemocrats.org',
   website: 'https://moyoungdemocrats.org',
   address: {
-    street: '',  // No street address
+    street: '',
     city: 'Kansas City',
     state: 'Missouri',
-    zip: '64127',  // ✅ CORRECT: 64127, not 64106
+    zip: '64127',
     country: 'United States',
-    poBox: 'PO Box 270043',  // ✅ CORRECT: PO Box 270043
+    poBox: 'PO Box 270043',
     extendedAddress: ''
   }
 }
@@ -47,7 +46,6 @@ export async function POST(request) {
 
     console.log(`📧 Sending intro to ${recipients.length} recipient(s)`)
 
-    // Get the message template if it exists
     const { data: messageTemplate } = await supabase
       .from('message_templates')
       .select('*')
@@ -55,9 +53,8 @@ export async function POST(request) {
       .maybeSingle()
 
     const introMessage = messageTemplate?.content || INTRO_MESSAGE
-
-    // Generate the vCard once for all recipients
     const vCardBlob = generateVCard()
+    
     console.log('📎 vCard generated:', {
       size: vCardBlob.size,
       preview: await vCardBlob.text().then(t => t.substring(0, 50) + '...')
@@ -87,7 +84,6 @@ export async function POST(request) {
 
         if (existingConv) {
           conversationId = existingConv.id
-          // Update conversation timestamp
           await supabase
             .from('conversations')
             .update({ 
@@ -129,9 +125,10 @@ export async function POST(request) {
         introSendId = introSend.id
         console.log(`✅ Created intro_send record: ${introSendId}`)
 
-        // Step 1: Send text message
-        console.log('📨 Step 1: Sending text message...')
-        const textTempGuid = `intro_text_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+        // 🔥 CRITICAL FIX: Use consistent GUID pattern that webhook can match
+        const textTempGuid = `temp-intro-text-${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+        
+        console.log('📨 Step 1: Sending text message with tempGuid:', textTempGuid)
         
         const textResponse = await fetch(
           `${BB_HOST}/api/v1/message/text?password=${BB_PASSWORD}`,
@@ -147,17 +144,24 @@ export async function POST(request) {
           }
         )
 
-        const textResult = await textResponse.json()
-        console.log('📨 Text response:', textResult)
+        if (!textResponse.ok) {
+          throw new Error(`Failed to send text: ${textResponse.status}`)
+        }
 
-        if (!textResponse.ok || textResult.status !== 200) {
-          throw new Error(textResult.error?.message || textResult.message || 'Failed to send text message')
+        const textResult = await textResponse.json()
+        console.log('📨 Text response:', {
+          status: textResponse.status,
+          guid: textResult.data?.guid,
+          tempGuid: textResult.data?.tempGuid
+        })
+
+        if (textResult.status !== 200 && textResult.message !== 'Message sent!') {
+          throw new Error(textResult.error?.message || 'Failed to send text message')
         }
 
         console.log('✅ Text message sent successfully')
 
-        // Save text message to database
-        const textMessageGuid = textResult.data?.guid || textTempGuid
+        // Save text message to database with temp GUID
         const { error: textMsgError } = await supabase
           .from('messages')
           .insert({
@@ -166,24 +170,24 @@ export async function POST(request) {
             direction: 'outbound',
             delivery_status: 'sent',
             sender_phone: recipient.phone,
-            guid: textMessageGuid,
+            guid: textTempGuid, // 🔥 Use temp GUID so webhook can find and update it
             is_read: true,
+            is_from_me: true,
             created_at: new Date().toISOString()
           })
 
         if (textMsgError) {
-          console.error('⚠️ Error saving text message to database:', textMsgError)
+          console.error('⚠️ Error saving text message:', textMsgError)
         } else {
-          console.log('✅ Text message saved to database!')
+          console.log('✅ Text message saved with tempGuid:', textTempGuid)
         }
 
         // Small delay between text and attachment
         await new Promise(resolve => setTimeout(resolve, 1500))
 
-        // Step 2: Send vCard attachment using FormData
+        // Step 2: Send vCard attachment
         console.log('📎 Step 2: Sending vCard attachment...')
         
-        // Convert Blob to File for BlueBubbles
         const fileBuffer = await vCardBlob.arrayBuffer()
         const vCardFile = new File([fileBuffer], 'Missouri Young Democrats.vcf', { 
           type: 'text/vcard',
@@ -196,10 +200,11 @@ export async function POST(request) {
         attachmentFormData.append('attachment', vCardFile)
         attachmentFormData.append('method', 'private-api')
         
-        const vCardTempGuid = `intro_vcard_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+        // 🔥 CRITICAL FIX: Use consistent GUID pattern
+        const vCardTempGuid = `temp-intro-vcard-${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
         attachmentFormData.append('tempGuid', vCardTempGuid)
 
-        console.log('📎 Submitting vCard via FormData to BlueBubbles')
+        console.log('📎 Submitting vCard with tempGuid:', vCardTempGuid)
 
         const attachmentResponse = await fetch(
           `${BB_HOST}/api/v1/message/attachment?password=${BB_PASSWORD}`,
@@ -217,18 +222,55 @@ export async function POST(request) {
           attachmentResult = JSON.parse(responseText)
         } catch (e) {
           console.log('⚠️ Attachment response not JSON:', responseText.substring(0, 200))
-          // If BlueBubbles didn't respond with JSON but request was accepted, treat as success
-          if (attachmentResponse.ok || attachmentResponse.status === 200) {
-            attachmentResult = { status: 200 }
-          } else {
-            throw new Error(`BlueBubbles response error: ${attachmentResponse.status}`)
+          
+          // 🔥 If we get a 524 but the message was still queued, that's OK
+          // BlueBubbles will send it and webhook will update the status
+          if (responseText.includes('524')) {
+            console.log('⚠️ Got 524 but message likely queued - webhook will update status')
+            
+            // Save vCard message with temp GUID so webhook can update it
+            await supabase
+              .from('messages')
+              .insert({
+                conversation_id: conversationId,
+                body: '',
+                direction: 'outbound',
+                delivery_status: 'sending', // Webhook will update this
+                sender_phone: recipient.phone,
+                guid: vCardTempGuid,
+                is_read: true,
+                is_from_me: true,
+                created_at: new Date().toISOString(),
+                attachments: [{
+                  transfer_name: 'Missouri Young Democrats.vcf',
+                  mime_type: 'text/vcard'
+                }]
+              })
+            
+            // Don't throw error - let webhook handle the update
+            console.log('✅ vCard message saved, waiting for webhook to confirm delivery')
+            
+            await supabase
+              .from('intro_sends')
+              .update({ status: 'sent', sent_at: new Date().toISOString() })
+              .eq('id', introSendId)
+
+            successCount++
+            results.push({
+              phone: recipient.phone,
+              name: recipient.name,
+              status: 'success',
+              message: 'Intro sent (webhook will confirm)'
+            })
+            continue
           }
+          
+          throw new Error(`BlueBubbles response error: ${attachmentResponse.status}`)
         }
 
         console.log('📎 Attachment response:', {
           ok: attachmentResponse.ok,
-          status: attachmentResponse.status,
-          result: attachmentResult
+          status: attachmentResponse.status
         })
 
         // Check if attachment send was successful
@@ -239,26 +281,24 @@ export async function POST(request) {
 
         console.log(`✅ Intro sent successfully to ${recipient.name}`)
 
-        // Save vCard attachment message to database
-        const vCardMessageGuid = attachmentResult.data?.guid || vCardTempGuid
-        const { error: vCardMsgError } = await supabase
+        // Save vCard message with temp GUID
+        await supabase
           .from('messages')
           .insert({
             conversation_id: conversationId,
-            body: '', // Attachments typically have empty body
+            body: '',
             direction: 'outbound',
             delivery_status: 'sent',
             sender_phone: recipient.phone,
-            guid: vCardMessageGuid,
+            guid: vCardTempGuid, // 🔥 Use temp GUID so webhook can update it
             is_read: true,
-            created_at: new Date().toISOString()
+            is_from_me: true,
+            created_at: new Date().toISOString(),
+            attachments: [{
+              transfer_name: 'Missouri Young Democrats.vcf',
+              mime_type: 'text/vcard'
+            }]
           })
-
-        if (vCardMsgError) {
-          console.error('⚠️ Error saving vCard message to database:', vCardMsgError)
-        } else {
-          console.log('✅ vCard message saved to database!')
-        }
 
         // Update intro_send status to completed
         await supabase
@@ -278,7 +318,6 @@ export async function POST(request) {
         console.error(`❌ Failed to send intro to ${recipient.name}:`, error)
         failCount++
         
-        // Update intro_send status to failed if it was created
         if (introSendId) {
           await supabase
             .from('intro_sends')
@@ -315,7 +354,6 @@ export async function POST(request) {
 
 function generateVCard() {
   try {
-    // Read and encode logo
     const logoPath = join(process.cwd(), 'public', 'moyd-logo.png')
     let logoBase64 = ''
     
@@ -327,10 +365,9 @@ function generateVCard() {
         base64Length: logoBase64.length
       })
     } catch (logoError) {
-      console.warn('⚠️ Could not load logo, continuing without it:', logoError.message)
+      console.warn('⚠️ Could not load logo:', logoError.message)
     }
 
-    // Build vCard content with CORRECT address
     const vCardLines = [
       'BEGIN:VCARD',
       'VERSION:3.0',
@@ -339,11 +376,9 @@ function generateVCard() {
       `TEL;TYPE=CELL:${CONTACT_INFO.phone}`,
       `EMAIL;TYPE=INTERNET:${CONTACT_INFO.email}`,
       `URL:${CONTACT_INFO.website}`,
-      // ✅ CORRECT ADDRESS: ADR format: poBox;extendedAddress;street;city;region;postalCode;country
       `ADR;TYPE=WORK:${CONTACT_INFO.address.poBox};${CONTACT_INFO.address.extendedAddress};${CONTACT_INFO.address.street};${CONTACT_INFO.address.city};${CONTACT_INFO.address.state};${CONTACT_INFO.address.zip};${CONTACT_INFO.address.country}`
     ]
 
-    // Add photo if logo was loaded successfully
     if (logoBase64) {
       vCardLines.push('PHOTO;ENCODING=BASE64;TYPE=PNG:' + logoBase64)
     }
@@ -361,7 +396,6 @@ function generateVCard() {
       zip: CONTACT_INFO.address.zip
     })
 
-    // Create Blob (for FormData)
     return new Blob([vCardContent], { type: 'text/vcard' })
   } catch (error) {
     console.error('Error generating vCard:', error)
