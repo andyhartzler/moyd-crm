@@ -14,7 +14,8 @@ function generateTempGuid() {
 
 export async function POST(request) {
   try {
-    // Check content type to determine if this is FormData or JSON
+    // ⚡ CRITICAL FIX: Check content type BEFORE trying to parse body
+    // Once you call request.json() or request.formData(), the body is consumed!
     const contentType = request.headers.get('content-type') || ''
     const isFormData = contentType.includes('multipart/form-data')
 
@@ -149,6 +150,12 @@ async function handleAttachment(request) {
       }
 
       console.log('✅ Attachment submitted successfully!')
+      
+      // Save to database in background if memberId provided
+      if (memberId) {
+        saveAttachmentToDatabase(memberId, chatGuid, phone, file.name, message)
+          .catch(err => console.error('⚠️ Background DB save error:', err))
+      }
 
       return NextResponse.json({
         success: true,
@@ -215,19 +222,19 @@ async function handleTextMessage(request) {
 
   const chatGuid = phone.includes(';') ? phone : `iMessage;-;${phone}`
 
-  // Handle reactions differently from regular messages
+  // Route to appropriate handler
   if (reaction) {
-    return await sendReaction(chatGuid, replyToGuid, reaction, partIndex || 0, phone, memberId)
+    return await sendReaction(chatGuid, replyToGuid, reaction, partIndex, phone, memberId)
   } else if (replyToGuid) {
-    return await sendReply(chatGuid, message, replyToGuid, phone, memberId, partIndex || 0)
+    return await sendReply(chatGuid, message, replyToGuid, phone, memberId, partIndex)
   } else {
-    return await sendRegularMessage(chatGuid, message, phone, memberId)
+    return await sendMessage(chatGuid, message, phone, memberId)
   }
 }
 
 // Send a regular message
-async function sendRegularMessage(chatGuid, message, phone, memberId) {
-  console.log('📤 Sending regular message via BlueBubbles Private API')
+async function sendMessage(chatGuid, message, phone, memberId) {
+  console.log('📤 Sending message via BlueBubbles Private API')
 
   const tempGuid = generateTempGuid()
   const controller = new AbortController()
@@ -252,11 +259,6 @@ async function sendRegularMessage(chatGuid, message, phone, memberId) {
     clearTimeout(timeoutId)
 
     const result = await response.json()
-
-    console.log('📥 BlueBubbles response:', {
-      status: result.status,
-      ok: response.ok
-    })
 
     if (!response.ok || result.status !== 200) {
       console.error('❌ BlueBubbles API error:', result)
@@ -450,63 +452,54 @@ async function saveMessageToDatabase(memberId, chatGuid, messageBody, phone, res
 
     console.log('💾 Saving message to database...')
 
-    // Try to find existing conversation
+    // Find existing conversation or create one
     const { data: existingConv } = await supabase
       .from('conversations')
       .select('id')
       .eq('member_id', memberId)
       .maybeSingle()
 
-    let conversationId = existingConv?.id
-
-    // If no conversation exists, create one
-    if (!conversationId) {
-      console.log('🔧 Creating new conversation for member:', memberId)
+    let conversationId
+    if (existingConv) {
+      conversationId = existingConv.id
       
-      const { data: newConv, error: convError } = await supabase
+      // Update conversation
+      await supabase
+        .from('conversations')
+        .update({
+          last_message: messageBody,
+          last_message_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', conversationId)
+    } else {
+      const { data: newConv } = await supabase
         .from('conversations')
         .insert({
           member_id: memberId,
-          chat_identifier: chatGuid,
           last_message: messageBody,
           last_message_at: new Date().toISOString()
         })
-        .select('id')
-        .maybeSingle()
-
-      if (convError) {
-        console.error('⚠️ Error creating conversation:', convError)
-      } else if (newConv) {
-        conversationId = newConv.id
-        console.log('✅ Created new conversation:', conversationId)
-      }
-    } else {
-      // Update existing conversation
-      await supabase
-        .from('conversations')
-        .update({ 
-          last_message: messageBody,
-          last_message_at: new Date().toISOString() 
-        })
-        .eq('id', conversationId)
-        .then(() => console.log('✅ Updated conversation'))
-        .catch(err => console.error('⚠️ Error updating conversation:', err))
+        .select()
+        .single()
+      
+      conversationId = newConv.id
     }
 
-    // Always try to create the message record
+    // Save message
     const messageData = {
+      conversation_id: conversationId,
       body: messageBody,
       direction: direction,
-      delivery_status: 'sent',
+      delivery_status: direction === 'outbound' ? 'sent' : 'delivered',
       sender_phone: phone,
       guid: result.data?.guid || `temp_${Date.now()}`,
-      thread_originator_guid: threadOriginatorGuid,
-      is_read: false
+      is_read: direction === 'outbound',
+      created_at: new Date().toISOString()
     }
 
-    // Only add conversation_id if we have one
-    if (conversationId) {
-      messageData.conversation_id = conversationId
+    if (threadOriginatorGuid) {
+      messageData.thread_originator_guid = threadOriginatorGuid
     }
 
     const { error: msgError } = await supabase
@@ -514,12 +507,84 @@ async function saveMessageToDatabase(memberId, chatGuid, messageBody, phone, res
       .insert(messageData)
 
     if (msgError) {
-      console.error('⚠️ Error creating message record:', msgError)
+      console.error('⚠️ Error creating message:', msgError)
     } else {
       console.log('✅ Message saved to database!')
     }
   } catch (error) {
     console.error('❌ Database error (message was still sent):', error)
+  }
+}
+
+// Save attachment to database
+async function saveAttachmentToDatabase(memberId, chatGuid, phone, fileName, message) {
+  try {
+    const { createClient } = require('@supabase/supabase-js')
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+    )
+
+    console.log('💾 Saving attachment message to database...')
+
+    // Find existing conversation or create one
+    const { data: existingConv } = await supabase
+      .from('conversations')
+      .select('id')
+      .eq('member_id', memberId)
+      .maybeSingle()
+
+    let conversationId
+    const displayMessage = message || `📎 ${fileName}`
+    
+    if (existingConv) {
+      conversationId = existingConv.id
+      
+      // Update conversation
+      await supabase
+        .from('conversations')
+        .update({
+          last_message: displayMessage,
+          last_message_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', conversationId)
+    } else {
+      const { data: newConv } = await supabase
+        .from('conversations')
+        .insert({
+          member_id: memberId,
+          last_message: displayMessage,
+          last_message_at: new Date().toISOString()
+        })
+        .select()
+        .single()
+      
+      conversationId = newConv.id
+    }
+
+    // Save message with attachment indicator
+    const { error: msgError } = await supabase
+      .from('messages')
+      .insert({
+        conversation_id: conversationId,
+        body: message || '',
+        direction: 'outbound',
+        delivery_status: 'sent',
+        sender_phone: phone,
+        guid: `temp_attachment_${Date.now()}`,
+        is_read: true,
+        has_attachments: true,
+        created_at: new Date().toISOString()
+      })
+
+    if (msgError) {
+      console.error('⚠️ Error creating attachment message:', msgError)
+    } else {
+      console.log('✅ Attachment message saved to database!')
+    }
+  } catch (error) {
+    console.error('❌ Database error (attachment was still sent):', error)
   }
 }
 
@@ -551,7 +616,7 @@ async function saveReactionToDatabase(memberId, chatGuid, phone, result, associa
       direction: 'outbound',
       delivery_status: 'sent',
       sender_phone: phone,
-      guid: result.data?.guid || `temp_${Date.now()}`,
+      guid: result.data?.guid || `temp_reaction_${Date.now()}`,
       associated_message_guid: associatedMessageGuid,
       associated_message_type: associatedMessageType,
       is_read: false

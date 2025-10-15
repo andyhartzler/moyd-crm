@@ -1,39 +1,42 @@
 import { NextResponse } from 'next/server'
+import { createClient } from '@supabase/supabase-js'
 import { readFileSync } from 'fs'
 import { join } from 'path'
-import { createClient } from '@supabase/supabase-js'
-
-const BB_HOST = process.env.NEXT_PUBLIC_BLUEBUBBLES_HOST
-const BB_PASSWORD = process.env.NEXT_PUBLIC_BLUEBUBBLES_PASSWORD
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 )
 
-// Contact information for MO Young Democrats
+const BB_HOST = process.env.NEXT_PUBLIC_BLUEBUBBLES_HOST
+const BB_PASSWORD = process.env.NEXT_PUBLIC_BLUEBUBBLES_PASSWORD
+
+// Contact information for the vCard
 const CONTACT_INFO = {
-  firstName: 'Missouri Young Democrats',
-  lastName: '',
   name: 'Missouri Young Democrats',
-  organization: '',
-  phone: '+18165300773',
-  email: 'info@moyoungdemocrats.org',
-  website: 'https://moyoungdemocrats.org',
+  phone: '+18168983610',
+  email: 'info@moyoungdems.org',
+  website: 'https://www.moyoungdems.org',
   address: {
-    poBox: '',
-    extendedAddress: '',  // Apartment/suite number (empty but needed for vCard format)
-    street: 'PO Box 270043',
+    street: '615 E 13th St',
     city: 'Kansas City',
-    state: 'Missouri',
-    zip: '64127',
-    country: 'United States'
+    state: 'MO',
+    zip: '64106',
+    country: 'USA',
+    poBox: '',
+    extendedAddress: ''
   }
 }
 
+const INTRO_MESSAGE = `Hi! Thanks for connecting with MO Young Democrats. 
+
+Tap the contact card below to save our info.
+
+Reply STOP to opt out of future messages.`
+
 export async function POST(request) {
   try {
-    const { recipients, templateId } = await request.json()
+    const { recipients } = await request.json()
 
     if (!recipients || !Array.isArray(recipients) || recipients.length === 0) {
       return NextResponse.json(
@@ -44,84 +47,30 @@ export async function POST(request) {
 
     console.log(`📧 Sending intro to ${recipients.length} recipient(s)`)
 
-    // Get the message template (either specified or default)
-    let messageTemplate
-    if (templateId) {
-      const { data: template } = await supabase
-        .from('intro_message_templates')
-        .select('*')
-        .eq('id', templateId)
-        .eq('active', true)
-        .single()
-      
-      messageTemplate = template
-    }
-    
-    // Fall back to default template if none specified or not found
-    if (!messageTemplate) {
-      const { data: defaultTemplate } = await supabase
-        .from('intro_message_templates')
-        .select('*')
-        .eq('is_default', true)
-        .eq('active', true)
-        .single()
-      
-      messageTemplate = defaultTemplate
-    }
+    // Get the message template if it exists
+    const { data: messageTemplate } = await supabase
+      .from('message_templates')
+      .select('*')
+      .eq('name', 'Introduction')
+      .maybeSingle()
 
-    const introMessage = messageTemplate?.message_text || `Hi! Thanks for connecting with MO Young Democrats. 
+    const introMessage = messageTemplate?.content || INTRO_MESSAGE
 
-Tap the contact card below to save our info.
-
-Reply STOP to opt out of future messages.`
+    // Generate the vCard once for all recipients
+    const vCardBlob = generateVCard()
+    console.log('📎 vCard generated:', {
+      size: vCardBlob.size,
+      preview: await vCardBlob.text().then(t => t.substring(0, 50) + '...')
+    })
 
     const results = []
     let successCount = 0
     let failCount = 0
 
-    // Generate vCard once (will be reused for all recipients)
-    const vCardBlob = generateVCard()
-    
-    console.log('📎 vCard generated successfully')
-
     for (const recipient of recipients) {
       let introSendId = null
-      
+
       try {
-        // Check if member has opted out
-        const { data: member } = await supabase
-          .from('members')
-          .select('opt_out')
-          .eq('id', recipient.memberId)
-          .single()
-        
-        if (member?.opt_out) {
-          console.log(`⚠️ Skipping ${recipient.name} - opted out`)
-          results.push({
-            recipient: recipient.name,
-            phone: recipient.phone,
-            success: false,
-            error: 'User has opted out'
-          })
-          failCount++
-          continue
-        }
-
-        // Check if intro was already sent to this member
-        const { data: existingSend } = await supabase
-          .from('intro_sends')
-          .select('id, sent_at')
-          .eq('member_id', recipient.memberId)
-          .eq('status', 'sent')
-          .order('sent_at', { ascending: false })
-          .limit(1)
-          .maybeSingle()
-        
-        if (existingSend) {
-          const daysSinceLastSend = Math.floor((Date.now() - new Date(existingSend.sent_at).getTime()) / (1000 * 60 * 60 * 24))
-          console.log(`ℹ️ Intro was already sent to ${recipient.name} ${daysSinceLastSend} days ago`)
-        }
-
         const chatGuid = recipient.phone.includes(';') 
           ? recipient.phone 
           : `iMessage;-;${recipient.phone}`
@@ -147,8 +96,52 @@ Reply STOP to opt out of future messages.`
         introSendId = introSend.id
         console.log(`✅ Created intro_send record: ${introSendId}`)
 
+        // Find or create conversation
+        let conversationId
+        const { data: existingConv } = await supabase
+          .from('conversations')
+          .select('id')
+          .eq('member_id', recipient.memberId)
+          .maybeSingle()
+
+        if (existingConv) {
+          conversationId = existingConv.id
+          // Update conversation with latest message
+          await supabase
+            .from('conversations')
+            .update({
+              last_message: introMessage,
+              last_message_at: new Date().toISOString(),
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', conversationId)
+          console.log('📝 Updated existing conversation:', conversationId)
+        } else {
+          // Create new conversation
+          const { data: newConv, error: convError } = await supabase
+            .from('conversations')
+            .insert({
+              member_id: recipient.memberId,
+              chat_identifier: chatGuid,
+              last_message: introMessage,
+              last_message_at: new Date().toISOString()
+            })
+            .select('id')
+            .single()
+
+          if (convError) {
+            console.error('Error creating conversation:', convError)
+            throw new Error('Failed to create conversation')
+          }
+
+          conversationId = newConv.id
+          console.log('✅ Created new conversation:', conversationId)
+        }
+
         // Step 1: Send text message
         console.log('📨 Step 1: Sending text message...')
+        const textTempGuid = `intro_text_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+        
         const textResponse = await fetch(
           `${BB_HOST}/api/v1/message/text?password=${BB_PASSWORD}`,
           {
@@ -158,7 +151,7 @@ Reply STOP to opt out of future messages.`
               chatGuid: chatGuid,
               message: introMessage,
               method: 'private-api',
-              tempGuid: `intro_text_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+              tempGuid: textTempGuid
             }),
           }
         )
@@ -172,19 +165,41 @@ Reply STOP to opt out of future messages.`
 
         console.log('✅ Text message sent successfully')
 
+        // 🔥 NEW: Save text message to database immediately
+        const textMessageGuid = textResult.data?.guid || textTempGuid
+        const { error: textMsgError } = await supabase
+          .from('messages')
+          .insert({
+            conversation_id: conversationId,
+            body: introMessage,
+            direction: 'outbound',
+            delivery_status: 'sent',
+            sender_phone: recipient.phone,
+            guid: textMessageGuid,
+            is_read: true,
+            has_attachments: false,
+            created_at: new Date().toISOString()
+          })
+
+        if (textMsgError) {
+          console.error('⚠️ Error saving text message to database:', textMsgError)
+        } else {
+          console.log('✅ Text message saved to database!')
+        }
+
         // Small delay between text and attachment
         await new Promise(resolve => setTimeout(resolve, 1000))
 
         // Step 2: Send vCard attachment using FormData
         console.log('📎 Step 2: Sending vCard attachment...')
         
-        // Create FormData for the attachment
         const attachmentFormData = new FormData()
         attachmentFormData.append('chatGuid', chatGuid)
         attachmentFormData.append('name', 'Missouri Young Democrats.vcf')
         attachmentFormData.append('attachment', vCardBlob, 'Missouri Young Democrats.vcf')
         attachmentFormData.append('method', 'private-api')
-        attachmentFormData.append('tempGuid', `intro_vcard_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`)
+        const vCardTempGuid = `intro_vcard_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+        attachmentFormData.append('tempGuid', vCardTempGuid)
 
         console.log('📎 Submitting vCard via FormData to BlueBubbles')
 
@@ -218,6 +233,28 @@ Reply STOP to opt out of future messages.`
         }
 
         console.log(`✅ Intro sent successfully to ${recipient.name}`)
+
+        // 🔥 NEW: Save vCard attachment message to database immediately
+        const vCardMessageGuid = attachmentResult.data?.guid || vCardTempGuid
+        const { error: vCardMsgError } = await supabase
+          .from('messages')
+          .insert({
+            conversation_id: conversationId,
+            body: '', // Attachments typically have empty body
+            direction: 'outbound',
+            delivery_status: 'sent',
+            sender_phone: recipient.phone,
+            guid: vCardMessageGuid,
+            is_read: true,
+            has_attachments: true,
+            created_at: new Date().toISOString()
+          })
+
+        if (vCardMsgError) {
+          console.error('⚠️ Error saving vCard message to database:', vCardMsgError)
+        } else {
+          console.log('✅ vCard message saved to database!')
+        }
         
         // Update intro_send record to success
         if (introSendId) {
@@ -320,7 +357,6 @@ function generateVCard() {
     }
 
     // Build vCard content
-    // ✅ FIXED: vCard ADR has 7 components (was missing extended-address)
     const vCardLines = [
       'BEGIN:VCARD',
       'VERSION:3.0',
