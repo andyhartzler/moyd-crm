@@ -161,18 +161,17 @@ export async function POST(request) {
 
         console.log('✅ Text message sent successfully')
 
-        // Save text message to database with temp GUID
+        // 🔥 FIXED: Save text message to database with direction instead of is_from_me
         const { error: textMsgError } = await supabase
           .from('messages')
           .insert({
             conversation_id: conversationId,
             body: introMessage,
-            direction: 'outbound',
+            direction: 'outbound', // ✅ FIXED: Use direction instead of is_from_me
             delivery_status: 'sent',
             sender_phone: recipient.phone,
-            guid: textTempGuid, // 🔥 Use temp GUID so webhook can find and update it
+            guid: textTempGuid,
             is_read: true,
-            is_from_me: true,
             created_at: new Date().toISOString()
           })
 
@@ -199,11 +198,11 @@ export async function POST(request) {
         attachmentFormData.append('name', 'Missouri Young Democrats.vcf')
         attachmentFormData.append('attachment', vCardFile)
         attachmentFormData.append('method', 'private-api')
-        
-        // 🔥 CRITICAL FIX: Use consistent GUID pattern
+
+        // 🔥 CRITICAL: Use temp GUID for attachment so webhook can match it
         const vCardTempGuid = `temp-intro-vcard-${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
         attachmentFormData.append('tempGuid', vCardTempGuid)
-
+        
         console.log('📎 Submitting vCard with tempGuid:', vCardTempGuid)
 
         const attachmentResponse = await fetch(
@@ -214,105 +213,65 @@ export async function POST(request) {
           }
         )
 
-        // Try to parse response
-        let attachmentResult
-        const responseText = await attachmentResponse.text()
-        
-        try {
-          attachmentResult = JSON.parse(responseText)
-        } catch (e) {
-          console.log('⚠️ Attachment response not JSON:', responseText.substring(0, 200))
-          
-          // 🔥 If we get a 524 but the message was still queued, that's OK
-          // BlueBubbles will send it and webhook will update the status
-          if (responseText.includes('524')) {
-            console.log('⚠️ Got 524 but message likely queued - webhook will update status')
-            
-            // Save vCard message with temp GUID so webhook can update it
-            await supabase
-              .from('messages')
-              .insert({
-                conversation_id: conversationId,
-                body: '',
-                direction: 'outbound',
-                delivery_status: 'sending', // Webhook will update this
-                sender_phone: recipient.phone,
-                guid: vCardTempGuid,
-                is_read: true,
-                is_from_me: true,
-                created_at: new Date().toISOString(),
-                attachments: [{
-                  transfer_name: 'Missouri Young Democrats.vcf',
-                  mime_type: 'text/vcard'
-                }]
-              })
-            
-            // Don't throw error - let webhook handle the update
-            console.log('✅ vCard message saved, waiting for webhook to confirm delivery')
-            
-            await supabase
-              .from('intro_sends')
-              .update({ status: 'sent', sent_at: new Date().toISOString() })
-              .eq('id', introSendId)
+        console.log('📎 Attachment response status:', attachmentResponse.status)
 
-            successCount++
-            results.push({
-              phone: recipient.phone,
-              name: recipient.name,
-              status: 'success',
-              message: 'Intro sent (webhook will confirm)'
+        // 🔥 IMPROVED: Handle various BlueBubbles response formats
+        if (attachmentResponse.ok || attachmentResponse.status === 200) {
+          console.log('✅ Attachment sent successfully')
+
+          // 🔥 FIXED: Save vCard message with direction instead of is_from_me
+          const { error: vCardMsgError } = await supabase
+            .from('messages')
+            .insert({
+              conversation_id: conversationId,
+              body: '',
+              direction: 'outbound', // ✅ FIXED: Use direction instead of is_from_me
+              delivery_status: 'sent',
+              sender_phone: recipient.phone,
+              guid: vCardTempGuid,
+              is_read: true,
+              created_at: new Date().toISOString(),
+              attachments: [{
+                transfer_name: 'Missouri Young Democrats.vcf',
+                mime_type: 'text/vcard'
+              }]
             })
-            continue
-          }
           
-          throw new Error(`BlueBubbles response error: ${attachmentResponse.status}`)
-        }
+          if (vCardMsgError) {
+            console.error('⚠️ Error saving vCard message:', vCardMsgError)
+          } else {
+            console.log('✅ vCard message saved with tempGuid:', vCardTempGuid)
+          }
 
-        console.log('📎 Attachment response:', {
-          ok: attachmentResponse.ok,
-          status: attachmentResponse.status
-        })
+          // Update intro_send status to completed
+          await supabase
+            .from('intro_sends')
+            .update({ status: 'sent', sent_at: new Date().toISOString() })
+            .eq('id', introSendId)
 
-        // Check if attachment send was successful
-        if (!attachmentResponse.ok && !(attachmentResult.status && attachmentResult.status === 200)) {
-          console.error('❌ Attachment send failed:', attachmentResult)
-          throw new Error(attachmentResult.error?.message || attachmentResult.message || 'Failed to send contact card')
-        }
-
-        console.log(`✅ Intro sent successfully to ${recipient.name}`)
-
-        // Save vCard message with temp GUID
-        await supabase
-          .from('messages')
-          .insert({
-            conversation_id: conversationId,
-            body: '',
-            direction: 'outbound',
-            delivery_status: 'sent',
-            sender_phone: recipient.phone,
-            guid: vCardTempGuid, // 🔥 Use temp GUID so webhook can update it
-            is_read: true,
-            is_from_me: true,
-            created_at: new Date().toISOString(),
-            attachments: [{
-              transfer_name: 'Missouri Young Democrats.vcf',
-              mime_type: 'text/vcard'
-            }]
+          successCount++
+          results.push({
+            phone: recipient.phone,
+            name: recipient.name,
+            status: 'success',
+            message: 'Intro sent successfully'
           })
 
-        // Update intro_send status to completed
-        await supabase
-          .from('intro_sends')
-          .update({ status: 'sent', sent_at: new Date().toISOString() })
-          .eq('id', introSendId)
-
-        successCount++
-        results.push({
-          phone: recipient.phone,
-          name: recipient.name,
-          status: 'success',
-          message: 'Intro sent successfully'
-        })
+        } else {
+          // Try to get error details
+          const responseText = await attachmentResponse.text()
+          let errorMessage = 'Failed to send contact card'
+          
+          try {
+            const attachmentResult = JSON.parse(responseText)
+            errorMessage = attachmentResult.error?.message || attachmentResult.message || errorMessage
+            console.error('❌ Attachment send failed:', attachmentResult)
+          } catch (e) {
+            console.error('❌ Attachment send failed (raw):', responseText.substring(0, 200))
+          }
+          
+          throw new Error(errorMessage)
+        }
 
       } catch (error) {
         console.error(`❌ Failed to send intro to ${recipient.name}:`, error)
