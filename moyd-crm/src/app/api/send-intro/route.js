@@ -196,7 +196,7 @@ export async function POST(request) {
             conversation_id: conversationId,
             body: '\ufffc', // Object replacement character for attachments
             direction: 'outbound',
-            delivery_status: 'sending', // Mark as sending, webhook will update
+            delivery_status: 'sent', // Mark as sent, webhook will update to delivered
             sender_phone: recipient.phone,
             guid: vCardTempGuid,
             is_read: true,
