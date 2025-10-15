@@ -134,13 +134,13 @@ Reply STOP to opt out of future messages.`
 
         console.log(`📤 Sending intro to ${recipient.name} (${recipient.phone})`)
 
-        // ⚡ FIXED: Use 'pending' instead of 'sending' to avoid constraint violation
+        // Create intro_send record with 'pending' status
         const { data: introSend, error: introSendError } = await supabase
           .from('intro_sends')
           .insert({
             member_id: recipient.memberId,
             template_id: messageTemplate?.id || null,
-            status: 'pending'  // FIXED: Changed from 'sending' to 'pending'
+            status: 'pending'
           })
           .select()
           .single()
@@ -182,8 +182,19 @@ Reply STOP to opt out of future messages.`
         // Wait a bit before sending attachment
         await new Promise(resolve => setTimeout(resolve, 1000))
 
-        // ⚡ CRITICAL FIX: BlueBubbles attachment API expects base64 string directly
+        // Send vCard attachment
         console.log('📎 Step 2: Sending vCard attachment...')
+        
+        // Ensure we have the base64 string
+        if (!vCardBase64 || vCardBase64.length === 0) {
+          throw new Error('vCard base64 is empty')
+        }
+
+        console.log('📎 Attachment details:', {
+          base64Length: vCardBase64.length,
+          chatGuid: chatGuid
+        })
+
         const attachmentResponse = await fetch(
           `${BB_HOST}/api/v1/message/attachment?password=${BB_PASSWORD}`,
           {
@@ -191,7 +202,7 @@ Reply STOP to opt out of future messages.`
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               chatGuid: chatGuid,
-              attachment: vCardBase64,  // Base64 string of the vCard file
+              attachment: vCardBase64,  // Raw base64 string
               name: 'Missouri Young Democrats.vcf',
               method: 'private-api',
               tempGuid: `intro_vcard_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
@@ -229,15 +240,19 @@ Reply STOP to opt out of future messages.`
         }
 
         // Track the delivery in contact_card_interactions
+        // FIXED: Removed .catch() and using proper error handling
         if (introSendId) {
-          await supabase
+          const { error: interactionError } = await supabase
             .from('contact_card_interactions')
             .insert({
               member_id: recipient.memberId,
               intro_send_id: introSendId,
               interaction_type: 'delivered'
             })
-            .catch(err => console.error('⚠️ Failed to track interaction:', err))
+          
+          if (interactionError) {
+            console.error('⚠️ Failed to track interaction:', interactionError)
+          }
         }
         
         results.push({
@@ -254,15 +269,19 @@ Reply STOP to opt out of future messages.`
         console.error(`❌ Failed to send intro to ${recipient.name}:`, error)
         
         // Update intro_send record to failed
+        // FIXED: Removed .catch() and using proper error handling
         if (introSendId) {
-          await supabase
+          const { error: updateError } = await supabase
             .from('intro_sends')
             .update({ 
               status: 'failed',
               error_message: error.message
             })
             .eq('id', introSendId)
-            .catch(err => console.error('⚠️ Failed to update failure status:', err))
+          
+          if (updateError) {
+            console.error('⚠️ Failed to update failure status:', updateError)
+          }
         }
         
         results.push({
