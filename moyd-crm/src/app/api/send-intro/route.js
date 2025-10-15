@@ -18,57 +18,52 @@ const CONTACT_INFO = {
   website: 'https://moyoungdemocrats.org',
   address: {
     street: '',
-    city: 'Kansas City',
-    state: 'Missouri',
-    zip: '64127',
-    country: 'United States',
     poBox: 'PO Box 270043',
-    extendedAddress: ''
+    city: 'Kansas City',
+    state: 'MO',
+    zip: '64127',
+    country: 'US'
   }
 }
-
-const INTRO_MESSAGE = `Hi! Thanks for connecting with MO Young Democrats. 
-
-Tap the contact card below to save our info.
-
-Reply STOP to opt out of future messages.`
 
 export async function POST(request) {
   try {
     const { recipients } = await request.json()
+    
+    console.log('📧 Sending intro to', recipients.length, 'recipient(s)')
 
-    if (!recipients || !Array.isArray(recipients) || recipients.length === 0) {
-      return NextResponse.json(
-        { error: 'Recipients array is required' },
-        { status: 400 }
-      )
+    // Load logo once for all recipients
+    let logoBase64 = null
+    try {
+      const logoPath = join(process.cwd(), 'public', 'logo.png')
+      const logoBuffer = readFileSync(logoPath)
+      logoBase64 = logoBuffer.toString('base64')
+      console.log('✅ Logo loaded successfully:', {
+        size: logoBuffer.length,
+        base64Length: logoBase64.length
+      })
+    } catch (err) {
+      console.error('⚠️ Could not load logo:', err.message)
     }
 
-    console.log(`📧 Sending intro to ${recipients.length} recipient(s)`)
-
-    const { data: messageTemplate } = await supabase
-      .from('message_templates')
-      .select('*')
-      .eq('name', 'Introduction')
-      .maybeSingle()
-
-    const introMessage = messageTemplate?.content || INTRO_MESSAGE
-    const vCardBlob = generateVCard()
+    // Generate vCard
+    const vCardContent = generateVCard(CONTACT_INFO, logoBase64)
+    const vCardBlob = new Blob([vCardContent], { type: 'text/vcard' })
     
     console.log('📎 vCard generated:', {
       size: vCardBlob.size,
-      preview: await vCardBlob.text().then(t => t.substring(0, 50) + '...')
+      preview: vCardContent.substring(0, 50) + '...'
     })
 
     const results = []
     let successCount = 0
-    let failCount = 0
+    let introSendId = null
 
     for (const recipient of recipients) {
-      let introSendId = null
-
       try {
-        const chatGuid = recipient.phone.includes(';') 
+        const introMessage = `Hi! Thanks for connecting with MO Young Democrats.\n\nTap the contact card below to save our info.\n\nReply STOP to opt out of future messages.`
+        
+        const chatGuid = recipient.phone?.includes(';') 
           ? recipient.phone 
           : `iMessage;-;${recipient.phone}`
 
@@ -111,7 +106,7 @@ export async function POST(request) {
           .from('intro_sends')
           .insert({
             member_id: recipient.memberId,
-            template_id: messageTemplate?.id || null,
+            template_id: null,
             status: 'sending'
           })
           .select()
@@ -125,11 +120,8 @@ export async function POST(request) {
         introSendId = introSend.id
         console.log(`✅ Created intro_send record: ${introSendId}`)
 
-        // Generate temp GUIDs
-        const textTempGuid = `temp-intro-text-${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
-        const vCardTempGuid = `temp-intro-vcard-${Date.now() + 1}_${Math.random().toString(36).substr(2, 9)}`
-        
-        console.log('📨 Step 1: Sending text message with tempGuid:', textTempGuid)
+        // 🔥 CRITICAL FIX: Send message FIRST, get real GUID, THEN save to database
+        console.log('📨 Step 1: Sending text message to BlueBubbles...')
         
         const textResponse = await fetch(
           `${BB_HOST}/api/v1/message/text?password=${BB_PASSWORD}`,
@@ -139,8 +131,7 @@ export async function POST(request) {
             body: JSON.stringify({
               chatGuid: chatGuid,
               message: introMessage,
-              method: 'private-api',
-              tempGuid: textTempGuid
+              method: 'private-api'
             }),
           }
         )
@@ -150,11 +141,11 @@ export async function POST(request) {
         }
 
         const textResult = await textResponse.json()
-        console.log('📨 Text response:', {
-          status: textResponse.status,
-          guid: textResult.data?.guid,
-          tempGuid: textResult.data?.tempGuid
-        })
+        
+        // 🔥 CRITICAL: Extract the REAL GUID from BlueBubbles response
+        const realTextGuid = textResult.data?.guid
+        
+        console.log('📨 Text sent! Real GUID:', realTextGuid)
 
         if (textResult.status !== 200 && textResult.message !== 'Message sent!') {
           throw new Error(textResult.error?.message || 'Failed to send text message')
@@ -162,24 +153,26 @@ export async function POST(request) {
 
         console.log('✅ Text message sent successfully')
 
-        // Save text message to database
-        const { error: textMsgError } = await supabase
-          .from('messages')
-          .insert({
-            conversation_id: conversationId,
-            body: introMessage,
-            direction: 'outbound',
-            delivery_status: 'sent',
-            sender_phone: recipient.phone,
-            guid: textTempGuid,
-            is_read: true,
-            created_at: new Date().toISOString()
-          })
+        // 🔥 CRITICAL FIX: Save text message with REAL GUID from BlueBubbles
+        if (realTextGuid) {
+          const { error: textMsgError } = await supabase
+            .from('messages')
+            .insert({
+              conversation_id: conversationId,
+              body: introMessage,
+              direction: 'outbound',
+              delivery_status: 'sent', // Will be updated to 'delivered' by webhook
+              sender_phone: recipient.phone,
+              guid: realTextGuid, // 🔥 USE REAL GUID!
+              is_read: true,
+              created_at: new Date().toISOString()
+            })
 
-        if (textMsgError) {
-          console.error('⚠️ Error saving text message:', textMsgError)
-        } else {
-          console.log('✅ Text message saved with tempGuid:', textTempGuid)
+          if (textMsgError) {
+            console.error('⚠️ Error saving text message:', textMsgError)
+          } else {
+            console.log('✅ Text message saved with REAL GUID:', realTextGuid)
+          }
         }
 
         // Small delay between text and attachment
@@ -187,28 +180,6 @@ export async function POST(request) {
 
         // Step 2: Send vCard attachment
         console.log('📎 Step 2: Sending vCard attachment...')
-        
-        // 🔥 CRITICAL: Save vCard message to database BEFORE sending (optimistic)
-        console.log('💾 Saving vCard message optimistically with tempGuid:', vCardTempGuid)
-        const { error: vCardMsgError } = await supabase
-          .from('messages')
-          .insert({
-            conversation_id: conversationId,
-            body: '\ufffc', // Object replacement character for attachments
-            direction: 'outbound',
-            delivery_status: 'sent', // Mark as sent, webhook will update to delivered
-            sender_phone: recipient.phone,
-            guid: vCardTempGuid,
-            is_read: true,
-            created_at: new Date(Date.now() + 2).toISOString() // 2ms after text
-          })
-        
-        if (vCardMsgError) {
-          console.error('⚠️ Error saving vCard message:', vCardMsgError)
-          // Continue anyway - webhook might still work
-        } else {
-          console.log('✅ vCard message saved optimistically')
-        }
         
         const fileBuffer = await vCardBlob.arrayBuffer()
         const vCardFile = new File([fileBuffer], 'Missouri Young Democrats.vcf', { 
@@ -221,16 +192,15 @@ export async function POST(request) {
         attachmentFormData.append('name', 'Missouri Young Democrats.vcf')
         attachmentFormData.append('attachment', vCardFile)
         attachmentFormData.append('method', 'private-api')
-        attachmentFormData.append('tempGuid', vCardTempGuid)
-        
-        console.log('📎 Submitting vCard with tempGuid:', vCardTempGuid)
 
-        // Fire-and-forget with timeout handling
+        console.log('📎 Submitting vCard to BlueBubbles...')
+
+        // Set timeout for vCard (30 seconds)
         const controller = new AbortController()
         const timeoutId = setTimeout(() => {
           console.log('⏱️ BlueBubbles timeout (30s) - attachment is queued and will send in background')
           controller.abort()
-        }, 30000) // 30 second timeout
+        }, 30000)
 
         try {
           const attachmentResponse = await fetch(
@@ -238,34 +208,111 @@ export async function POST(request) {
             {
               method: 'POST',
               body: attachmentFormData,
-              signal: controller.signal,
+              signal: controller.signal
             }
           )
 
           clearTimeout(timeoutId)
-          console.log('📎 Attachment response status:', attachmentResponse.status)
 
-          // Check response
-          if (attachmentResponse.ok || attachmentResponse.status === 200) {
-            console.log('✅ Attachment sent successfully - webhook will update delivery status')
-          } else {
-            const responseText = await attachmentResponse.text()
-            console.error('⚠️ Attachment response not OK:', responseText.substring(0, 200))
-            // Don't throw error - message is queued in BlueBubbles
+          // Try to parse response
+          let attachmentResult
+          const responseText = await attachmentResponse.text()
+          
+          try {
+            attachmentResult = JSON.parse(responseText)
+            
+            // 🔥 CRITICAL: Extract real GUID from attachment response
+            const realVCardGuid = attachmentResult.data?.guid
+            
+            console.log('📎 vCard sent! Real GUID:', realVCardGuid)
+
+            // Save vCard message with REAL GUID
+            if (realVCardGuid) {
+              const { error: vCardError } = await supabase
+                .from('messages')
+                .insert({
+                  conversation_id: conversationId,
+                  body: '\ufffc', // Unicode object replacement character
+                  direction: 'outbound',
+                  delivery_status: 'sent', // Will be updated by webhook
+                  sender_phone: recipient.phone,
+                  guid: realVCardGuid, // 🔥 USE REAL GUID!
+                  is_read: true,
+                  is_contact_card: true,
+                  created_at: new Date().toISOString()
+                })
+
+              if (vCardError) {
+                console.error('⚠️ Error saving vCard message:', vCardError)
+              } else {
+                console.log('✅ vCard message saved with REAL GUID:', realVCardGuid)
+              }
+            }
+
+          } catch (e) {
+            console.log('⚠️ Attachment response not JSON:', responseText.substring(0, 200))
+            
+            // If we get a 524 or timeout, the message is likely queued
+            if (responseText.includes('524') || !attachmentResponse.ok) {
+              console.log('⚠️ Got error but message likely queued - webhook will update status')
+              
+              // Save with a temp GUID for now, webhook will update it
+              const tempVCardGuid = `temp-vcard-${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+              
+              await supabase
+                .from('messages')
+                .insert({
+                  conversation_id: conversationId,
+                  body: '\ufffc',
+                  direction: 'outbound',
+                  delivery_status: 'sending', // Webhook will update
+                  sender_phone: recipient.phone,
+                  guid: tempVCardGuid,
+                  is_read: true,
+                  is_contact_card: true,
+                  created_at: new Date().toISOString()
+                })
+              
+              console.log('✅ vCard message saved with temp GUID, waiting for webhook')
+            }
           }
+
         } catch (fetchError) {
+          clearTimeout(timeoutId)
+          
           if (fetchError.name === 'AbortError') {
             console.log('⏱️ Timeout aborted - BlueBubbles is processing in background')
+            
+            // Save with temp GUID, webhook will update when it sends
+            const tempVCardGuid = `temp-vcard-${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+            
+            await supabase
+              .from('messages')
+              .insert({
+                conversation_id: conversationId,
+                body: '\ufffc',
+                direction: 'outbound',
+                delivery_status: 'sending',
+                sender_phone: recipient.phone,
+                guid: tempVCardGuid,
+                is_read: true,
+                is_contact_card: true,
+                created_at: new Date().toISOString()
+              })
+            
+            console.log('✅ vCard queued, saved with temp GUID')
           } else {
-            console.error('⚠️ Fetch error (but message is queued):', fetchError.message)
+            throw fetchError
           }
-          // Don't throw - BlueBubbles queues messages even if fetch times out
         }
 
-        // Update intro_send status to completed
+        // Update intro_send status
         await supabase
           .from('intro_sends')
-          .update({ status: 'sent', sent_at: new Date().toISOString() })
+          .update({ 
+            status: 'sent',
+            sent_at: new Date().toISOString()
+          })
           .eq('id', introSendId)
 
         successCount++
@@ -273,19 +320,19 @@ export async function POST(request) {
           phone: recipient.phone,
           name: recipient.name,
           status: 'success',
-          message: 'Intro sent (webhook will confirm delivery)'
+          message: 'Intro sent successfully'
         })
 
-      } catch (error) {
-        console.error(`❌ Failed to send intro to ${recipient.name}:`, error)
-        failCount++
+      } catch (err) {
+        console.error(`❌ Failed to send to ${recipient.name}:`, err)
         
+        // Update intro_send to failed
         if (introSendId) {
           await supabase
             .from('intro_sends')
             .update({ 
               status: 'failed',
-              error_message: error.message 
+              error_message: err.message
             })
             .eq('id', introSendId)
         }
@@ -294,19 +341,20 @@ export async function POST(request) {
           phone: recipient.phone,
           name: recipient.name,
           status: 'failed',
-          error: error.message
+          error: err.message
         })
       }
     }
 
     return NextResponse.json({
       success: successCount > 0,
-      message: `Sent ${successCount} intro(s) successfully${failCount > 0 ? ` (${failCount} failed/skipped)` : ''}`,
+      totalSent: successCount,
+      totalFailed: recipients.length - successCount,
       results
     })
 
   } catch (error) {
-    console.error('💥 Error in send-intro API:', error)
+    console.error('❌ Error in send-intro:', error)
     return NextResponse.json(
       { error: error.message || 'Failed to send intro' },
       { status: 500 }
@@ -314,53 +362,49 @@ export async function POST(request) {
   }
 }
 
-function generateVCard() {
-  try {
-    const logoPath = join(process.cwd(), 'public', 'moyd-logo.png')
-    let logoBase64 = ''
-    
-    try {
-      const logoBuffer = readFileSync(logoPath)
-      logoBase64 = logoBuffer.toString('base64')
-      console.log('✅ Logo loaded successfully:', {
-        size: logoBuffer.length,
-        base64Length: logoBase64.length
-      })
-    } catch (logoError) {
-      console.warn('⚠️ Could not load logo:', logoError.message)
-    }
+function generateVCard(contact, logoBase64) {
+  const lines = [
+    'BEGIN:VCARD',
+    'VERSION:3.0',
+    `FN:${contact.name}`,
+    `ORG:${contact.name}`,
+  ]
 
-    const vCardLines = [
-      'BEGIN:VCARD',
-      'VERSION:3.0',
-      `FN:${CONTACT_INFO.name}`,
-      `ORG:${CONTACT_INFO.name}`,
-      `TEL;TYPE=CELL:${CONTACT_INFO.phone}`,
-      `EMAIL;TYPE=INTERNET:${CONTACT_INFO.email}`,
-      `URL:${CONTACT_INFO.website}`,
-      `ADR;TYPE=WORK:${CONTACT_INFO.address.poBox};${CONTACT_INFO.address.extendedAddress};${CONTACT_INFO.address.street};${CONTACT_INFO.address.city};${CONTACT_INFO.address.state};${CONTACT_INFO.address.zip};${CONTACT_INFO.address.country}`
-    ]
-
-    if (logoBase64) {
-      vCardLines.push('PHOTO;ENCODING=BASE64;TYPE=PNG:' + logoBase64)
-    }
-
-    vCardLines.push('END:VCARD')
-
-    const vCardContent = vCardLines.join('\r\n')
-
-    console.log('📝 vCard generated with CORRECT address:', {
-      lines: vCardLines.length,
-      hasPhoto: !!logoBase64,
-      contentLength: vCardContent.length,
-      phone: CONTACT_INFO.phone,
-      poBox: CONTACT_INFO.address.poBox,
-      zip: CONTACT_INFO.address.zip
-    })
-
-    return new Blob([vCardContent], { type: 'text/vcard' })
-  } catch (error) {
-    console.error('Error generating vCard:', error)
-    throw error
+  if (contact.phone) {
+    lines.push(`TEL;TYPE=WORK,VOICE:${contact.phone}`)
   }
+
+  if (contact.email) {
+    lines.push(`EMAIL;TYPE=INTERNET:${contact.email}`)
+  }
+
+  if (contact.website) {
+    lines.push(`URL:${contact.website}`)
+  }
+
+  // 🔥 CORRECT ADDRESS FORMAT with PO Box
+  if (contact.address) {
+    const { street, poBox, city, state, zip, country } = contact.address
+    // Format: ADR;TYPE=WORK:;;street;city;state;zip;country
+    // For PO Box: ADR;TYPE=WORK:;PO Box;city;state;zip;country
+    lines.push(`ADR;TYPE=WORK:;;${poBox};${city};${state};${zip};${country}`)
+    
+    console.log('📝 vCard generated with CORRECT address:', {
+      lines: lines.length,
+      hasPhoto: !!logoBase64,
+      contentLength: lines.join('\r\n').length + (logoBase64 ? logoBase64.length : 0),
+      phone: contact.phone,
+      poBox: poBox,
+      zip: zip
+    })
+  }
+
+  // Add photo if available
+  if (logoBase64) {
+    lines.push('PHOTO;ENCODING=b;TYPE=PNG:' + logoBase64)
+  }
+
+  lines.push('END:VCARD')
+
+  return lines.join('\r\n')
 }
