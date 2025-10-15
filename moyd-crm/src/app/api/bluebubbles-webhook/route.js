@@ -18,7 +18,7 @@ const OPT_IN_KEYWORDS = ['start', 'yes', 'subscribe', 'opt in', 'optin', 'opt-in
 export async function POST(request) {
   try {
     const body = await request.json()
-    console.log('Webhook received:', body.type, 'at', new Date().toISOString())
+    console.log('🔔 Webhook received:', body.type, 'at', new Date().toISOString())
 
     const { type, data } = body
 
@@ -62,7 +62,7 @@ export async function POST(request) {
 
     return NextResponse.json({ success: true })
   } catch (error) {
-    console.error('Webhook error:', error)
+    console.error('💥 Webhook error:', error)
     // Return 200 even on error so BlueBubbles doesn't retry
     return NextResponse.json({ 
       success: true, 
@@ -71,7 +71,7 @@ export async function POST(request) {
   }
 }
 
-// NEW: Check if message is an opt-out or opt-in request
+// Check if message is an opt-out or opt-in request
 async function checkOptOutOptIn(message, normalizedPhone, memberId) {
   if (!message.text || typeof message.text !== 'string') return
   
@@ -103,16 +103,6 @@ async function checkOptOutOptIn(message, normalizedPhone, memberId) {
     } else {
       console.log('✅ Member opted out successfully')
       
-      // Log the opt-out event
-      await supabase
-        .from('opt_out_log')
-        .insert({
-          member_id: memberId,
-          action: 'opt_out',
-          message_guid: message.guid,
-          message_text: message.text
-        })
-      
       // Send confirmation message
       await sendOptOutConfirmation(normalizedPhone)
     }
@@ -129,16 +119,6 @@ async function checkOptOutOptIn(message, normalizedPhone, memberId) {
       console.error('Error updating opt-in status:', updateError)
     } else {
       console.log('✅ Member opted in successfully')
-      
-      // Log the opt-in event
-      await supabase
-        .from('opt_out_log')
-        .insert({
-          member_id: memberId,
-          action: 'opt_in',
-          message_guid: message.guid,
-          message_text: message.text
-        })
       
       // Send confirmation message
       await sendOptInConfirmation(normalizedPhone)
@@ -179,7 +159,7 @@ async function sendOptInConfirmation(phone) {
     
     const confirmationMessage = `Welcome back! You've been re-subscribed to MO Young Democrats messages. 🎉
 
-We're glad to have you back! To unsubscribe again, reply STOP anytime.`
+We're glad to have you back!`
 
     await fetch(`${BB_HOST}/api/v1/message/text?password=${BB_PASSWORD}`, {
       method: 'POST',
@@ -198,71 +178,28 @@ We're glad to have you back! To unsubscribe again, reply STOP anytime.`
   }
 }
 
-async function handleNewMessage(data) {
+async function handleNewMessage(message) {
   try {
-    const message = data
-    
-    console.log('📨 New message received:', {
-      guid: message.guid?.substring(0, 20),
-      isFromMe: message.isFromMe,
-      hasAttachments: message.hasAttachments,
-      associatedMessageType: message.associatedMessageType,
-      text: message.text?.substring(0, 50)
-    })
+    console.log('📨 New message received:', message.guid?.substring(0, 20))
 
-    // ⚠️ CRITICAL: Convert string reaction types to numeric codes
-    const reactionMap = {
-      'love': 2000,
-      'like': 2001,
-      'dislike': 2002,
-      'laugh': 2003,
-      'emphasize': 2004,
-      'question': 2005,
-      '-love': 3000,
-      '-like': 3001,
-      '-dislike': 3002,
-      '-laugh': 3003,
-      '-emphasize': 3004,
-      '-question': 3005
+    // Check if it's a reaction (associatedMessageType != null)
+    if (message.associatedMessageType !== null && message.associatedMessageType !== undefined) {
+      return await handleIncomingReaction(message)
     }
 
-    // Check if associatedMessageType is a string and convert it
-    let numericReactionType = message.associatedMessageType
-    if (typeof message.associatedMessageType === 'string' && reactionMap[message.associatedMessageType.toLowerCase()]) {
-      numericReactionType = reactionMap[message.associatedMessageType.toLowerCase()]
-      console.log(`🔧 Converted reaction type from "${message.associatedMessageType}" to ${numericReactionType}`)
-    }
-
-    // ⚠️ CRITICAL: Check if this is a REACTION first (before checking isFromMe)
-    // Reactions can be from us OR from them
-    // Check for either numeric type >= 2000 OR if we converted from string
-    if (message.associatedMessageGuid && (numericReactionType >= 2000 || typeof message.associatedMessageType === 'string')) {
-      console.log('🎭 Processing reaction:', {
-        type: numericReactionType,
-        originalType: message.associatedMessageType,
-        targetGuid: message.associatedMessageGuid,
-        isFromMe: message.isFromMe
-      })
-      // Pass the numeric type to the handler
-      await handleIncomingReaction({ ...message, associatedMessageType: numericReactionType })
-      return
-    }
-
-    // Skip regular messages if it's from us (but reactions are already handled above)
+    // 🔥 CRITICAL FIX: Check if this is OUR outbound message coming back via webhook
+    // BlueBubbles sends back messages WE send via the API
     if (message.isFromMe) {
-      console.log('Skipping our own message')
-      return
+      console.log('📤 This is an outbound message we sent, handling specially')
+      return await handleOutboundMessageUpdate(message)
     }
 
-    console.log('Processing incoming message:', message.guid?.substring(0, 20))
-
-    // Extract phone number from chatGuid or handle
+    // Regular inbound message handling
     let phone = null
     
-    // Try to get from handle first
     if (message.handle?.address) {
       phone = message.handle.address
-    } else if (message.chats?.[0]?.chatIdentifier) {
+    } else if (message.chats && message.chats.length > 0 && message.chats[0]?.chatIdentifier) {
       const chatId = message.chats[0].chatIdentifier
       if (chatId.includes(';-;')) {
         phone = chatId.split(';-;')[1]
@@ -302,7 +239,7 @@ async function handleNewMessage(data) {
 
     console.log('Found member:', members.id)
 
-    // NEW: Check for opt-out/opt-in keywords BEFORE saving message
+    // Check for opt-out/opt-in keywords BEFORE saving message
     await checkOptOutOptIn(message, normalizedPhone, members.id)
 
     // Get message text for last_message field
@@ -318,12 +255,11 @@ async function handleNewMessage(data) {
       .from('conversations')
       .select('id')
       .eq('member_id', members.id)
-      .single()
+      .maybeSingle()
 
     let conversation
     if (existingConv) {
       console.log('Updating existing conversation')
-      // ⚡ FIXED: Update last_message and last_message_at along with updated_at
       const { data: updatedConv } = await supabase
         .from('conversations')
         .update({ 
@@ -412,6 +348,82 @@ async function handleNewMessage(data) {
   }
 }
 
+// 🔥 NEW: Handle outbound messages that come back via webhook
+async function handleOutboundMessageUpdate(message) {
+  try {
+    console.log('📤 Processing outbound message update:', message.guid?.substring(0, 20))
+
+    // Try to find the message by GUID first
+    let { data: existingMessage } = await supabase
+      .from('messages')
+      .select('*')
+      .eq('guid', message.guid)
+      .maybeSingle()
+
+    // If not found by real GUID, try to find by tempGuid pattern
+    if (!existingMessage) {
+      console.log('🔍 Message not found by GUID, checking for recent temp messages')
+      
+      // Find messages from last 30 seconds with temp GUIDs
+      const recentTime = new Date(Date.now() - 30000).toISOString()
+      const { data: recentMessages } = await supabase
+        .from('messages')
+        .select('*')
+        .eq('direction', 'outbound')
+        .gte('created_at', recentTime)
+        .like('guid', '%temp%')
+        .order('created_at', { ascending: false })
+        .limit(10)
+
+      // Try to match by body content
+      if (recentMessages && recentMessages.length > 0) {
+        existingMessage = recentMessages.find(m => m.body === message.text)
+        
+        if (existingMessage) {
+          console.log('✅ Matched message by content! Updating GUID from', existingMessage.guid, 'to', message.guid)
+          
+          // Update the GUID to the real one
+          await supabase
+            .from('messages')
+            .update({ guid: message.guid })
+            .eq('id', existingMessage.id)
+        }
+      }
+    }
+
+    // Now update the message with delivery status
+    if (existingMessage) {
+      const updateData = {
+        delivery_status: 'delivered'
+      }
+
+      if (message.dateDelivered) {
+        updateData.date_delivered = new Date(message.dateDelivered).toISOString()
+      }
+
+      if (message.dateRead) {
+        updateData.is_read = true
+        updateData.date_read = new Date(message.dateRead).toISOString()
+      }
+
+      const { error } = await supabase
+        .from('messages')
+        .update(updateData)
+        .eq('id', existingMessage.id)
+
+      if (error) {
+        console.error('Error updating outbound message:', error)
+      } else {
+        console.log('✅ Outbound message status updated successfully')
+      }
+    } else {
+      console.log('⚠️ Could not find existing message to update')
+    }
+  } catch (error) {
+    console.error('Error handling outbound message update:', error)
+  }
+}
+
 async function handleIncomingReaction(message) {
   try {
     console.log('🎭 Processing incoming reaction:', {
@@ -426,7 +438,7 @@ async function handleIncomingReaction(message) {
     
     if (message.handle?.address) {
       phone = message.handle.address
-    } else if (message.chats?.[0]?.chatIdentifier) {
+    } else if (message.chats && message.chats.length > 0 && message.chats[0]?.chatIdentifier) {
       const chatId = message.chats[0].chatIdentifier
       if (chatId.includes(';-;')) {
         phone = chatId.split(';-;')[1]
@@ -455,7 +467,7 @@ async function handleIncomingReaction(message) {
       .from('members')
       .select('id')
       .eq('phone_e164', normalizedPhone)
-      .single()
+      .maybeSingle()
 
     if (!members) {
       console.log('Member not found for reaction')
@@ -467,7 +479,7 @@ async function handleIncomingReaction(message) {
       .from('conversations')
       .select('id')
       .eq('member_id', members.id)
-      .single()
+      .maybeSingle()
 
     if (!conversation) {
       console.log('Conversation not found for reaction')
@@ -479,15 +491,14 @@ async function handleIncomingReaction(message) {
       .from('messages')
       .select('id')
       .eq('guid', message.guid)
-      .single()
+      .maybeSingle()
 
     if (existingReaction) {
       console.log('Reaction already exists:', message.guid)
       return
     }
 
-    // ⚠️ CRITICAL: Strip partIndex from associatedMessageGuid if present
-    // macOS 11+ formats are like "p:0/GUID", we need just "GUID"
+    // Strip partIndex from associatedMessageGuid if present
     let cleanAssociatedGuid = message.associatedMessageGuid
     if (cleanAssociatedGuid && cleanAssociatedGuid.startsWith('p:')) {
       const parts = cleanAssociatedGuid.split('/')
@@ -499,14 +510,14 @@ async function handleIncomingReaction(message) {
 
     // Ensure we have a numeric reaction type
     if (typeof message.associatedMessageType !== 'number') {
-      console.error('❌ Reaction type is not numeric after conversion:', message.associatedMessageType)
+      console.error('❌ Reaction type is not numeric:', message.associatedMessageType)
       return
     }
 
     // Save reaction as a message with association
     const reactionData = {
       conversation_id: conversation.id,
-      body: '', // Reactions don't have body text
+      body: '',
       direction: message.isFromMe ? 'outbound' : 'inbound',
       delivery_status: 'delivered',
       sender_phone: normalizedPhone,
@@ -540,7 +551,7 @@ async function handleIncomingReaction(message) {
 async function handleUpdatedMessage(data) {
   try {
     const message = data
-    console.log('Updating message:', message.guid?.substring(0, 20))
+    console.log('🔄 Updating message:', message.guid?.substring(0, 20))
 
     const updateData = {}
 
@@ -573,7 +584,7 @@ async function handleUpdatedMessage(data) {
       if (error) {
         console.error('Error updating message:', error)
       } else {
-        console.log('Message updated successfully:', message.guid?.substring(0, 20))
+        console.log('✅ Message updated successfully:', message.guid?.substring(0, 20))
       }
     }
   } catch (error) {
@@ -583,10 +594,9 @@ async function handleUpdatedMessage(data) {
 
 async function handleTypingIndicator(data) {
   try {
-    console.log('Typing indicator data:', data)
+    console.log('⌨️ Typing indicator data:', data)
 
     // Extract phone from chat identifier
-    // Format can be: "iMessage;-;+1234567890" or just the phone
     let phone = null
     
     if (data.chat) {
@@ -604,7 +614,7 @@ async function handleTypingIndicator(data) {
     }
 
     if (!phone) {
-      console.log('Could not extract phone from typing indicator')
+      console.log('No phone found in typing indicator')
       return
     }
 
@@ -618,38 +628,33 @@ async function handleTypingIndicator(data) {
       }
     }
 
-    console.log('Typing indicator for phone:', normalizedPhone)
-
     // Find member
     const { data: members } = await supabase
       .from('members')
       .select('id')
       .eq('phone_e164', normalizedPhone)
-      .single()
+      .maybeSingle()
 
     if (!members) {
       console.log('Member not found for typing indicator')
       return
     }
 
-    // The 'display' field indicates if typing (true) or stopped typing (false)
-    const isTyping = data.display === true
+    // Update typing status (you'll need to add this table/column if you want to track typing)
+    const isTyping = data.display === true || data.typing === true
 
-    console.log('Setting typing status to:', isTyping)
-
-    // Update conversation typing status
     const { error } = await supabase
-      .from('conversations')
-      .update({
+      .from('members')
+      .update({ 
         is_typing: isTyping,
-        typing_since: isTyping ? new Date().toISOString() : null
+        last_typing_at: isTyping ? new Date().toISOString() : null
       })
-      .eq('member_id', members.id)
+      .eq('id', members.id)
 
     if (error) {
       console.error('Error updating typing status:', error)
     } else {
-      console.log('Typing status updated successfully')
+      console.log('✅ Typing status updated successfully')
     }
   } catch (error) {
     console.error('Error handling typing indicator:', error)
@@ -659,16 +664,22 @@ async function handleTypingIndicator(data) {
 async function handleReadReceipt(data) {
   try {
     const { guid } = data
-    console.log('Message read:', guid?.substring(0, 20))
+    console.log('👁️ Message read:', guid?.substring(0, 20))
 
     // Update message as read
-    await supabase
+    const { error } = await supabase
       .from('messages')
       .update({
         is_read: true,
         date_read: new Date().toISOString()
       })
       .eq('guid', guid)
+
+    if (error) {
+      console.error('Error handling read receipt:', error)
+    } else {
+      console.log('✅ Read receipt processed')
+    }
   } catch (error) {
     console.error('Error handling read receipt:', error)
   }
@@ -677,16 +688,22 @@ async function handleReadReceipt(data) {
 async function handleMessageDelivered(data) {
   try {
     const { guid } = data
-    console.log('Message delivered:', guid?.substring(0, 20))
+    console.log('✅ Message delivered:', guid?.substring(0, 20))
 
     // Update message delivery status
-    await supabase
+    const { error } = await supabase
       .from('messages')
       .update({
         delivery_status: 'delivered',
         date_delivered: new Date().toISOString()
       })
       .eq('guid', guid)
+
+    if (error) {
+      console.error('Error handling delivery receipt:', error)
+    } else {
+      console.log('✅ Delivery status updated')
+    }
   } catch (error) {
     console.error('Error handling delivery receipt:', error)
   }
@@ -695,16 +712,22 @@ async function handleMessageDelivered(data) {
 async function handleSendError(data) {
   try {
     const { guid, error: errorMessage } = data
-    console.log('Message send error:', guid?.substring(0, 20), errorMessage)
+    console.log('❌ Message send error:', guid?.substring(0, 20), errorMessage)
 
     // Update message status to failed
-    await supabase
+    const { error } = await supabase
       .from('messages')
       .update({
         delivery_status: 'failed',
         error: errorMessage || 'Failed to send'
       })
       .eq('guid', guid)
+
+    if (error) {
+      console.error('Error handling send error:', error)
+    } else {
+      console.log('✅ Error status updated')
+    }
   } catch (error) {
     console.error('Error handling send error:', error)
   }
@@ -712,7 +735,7 @@ async function handleSendError(data) {
 
 async function handleGroupNameChange(data) {
   try {
-    console.log('Group name changed:', data)
+    console.log('📝 Group name changed:', data)
     // Implement if you need to track group name changes
   } catch (error) {
     console.error('Error handling group name change:', error)
@@ -721,7 +744,7 @@ async function handleGroupNameChange(data) {
 
 async function handleParticipantChange(data, type) {
   try {
-    console.log('Participant change:', type, data)
+    console.log('👥 Participant change:', type, data)
     // Implement if you need to track participant additions/removals
   } catch (error) {
     console.error('Error handling participant change:', error)
