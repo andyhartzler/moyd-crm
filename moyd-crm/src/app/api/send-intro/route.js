@@ -81,14 +81,7 @@ Reply STOP to opt out of future messages.`
     // Generate vCard once (will be reused for all recipients)
     const vCardBlob = generateVCard()
     
-    // Convert Blob to base64 for BlueBubbles API
-    const vCardArrayBuffer = await vCardBlob.arrayBuffer()
-    const vCardBase64 = Buffer.from(vCardArrayBuffer).toString('base64')
-
-    console.log('📎 vCard generated:', {
-      size: vCardBase64.length,
-      preview: vCardBase64.substring(0, 50) + '...'
-    })
+    console.log('📎 vCard generated successfully')
 
     for (const recipient of recipients) {
       let introSendId = null
@@ -134,26 +127,26 @@ Reply STOP to opt out of future messages.`
 
         console.log(`📤 Sending intro to ${recipient.name} (${recipient.phone})`)
 
-        // Create intro_send record with 'pending' status
+        // Create intro_send record
         const { data: introSend, error: introSendError } = await supabase
           .from('intro_sends')
           .insert({
             member_id: recipient.memberId,
-            template_id: messageTemplate?.id || null,
-            status: 'pending'
+            status: 'sending',
+            message_text: introMessage
           })
           .select()
           .single()
         
         if (introSendError) {
-          console.error('⚠️ Error creating intro_send record:', introSendError)
-          // Continue anyway - don't let tracking issues prevent message sending
-        } else {
-          introSendId = introSend.id
-          console.log('✅ Created intro_send record:', introSendId)
+          console.error('Error creating intro_send record:', introSendError)
+          throw new Error('Failed to create send record')
         }
 
-        // First, send the text message
+        introSendId = introSend.id
+        console.log(`✅ Created intro_send record: ${introSendId}`)
+
+        // Step 1: Send text message
         console.log('📨 Step 1: Sending text message...')
         const textResponse = await fetch(
           `${BB_HOST}/api/v1/message/text?password=${BB_PASSWORD}`,
@@ -173,40 +166,32 @@ Reply STOP to opt out of future messages.`
         console.log('📨 Text response:', textResult)
 
         if (!textResponse.ok || textResult.status !== 200) {
-          console.error('❌ Text send failed:', textResult)
-          throw new Error(textResult.error?.message || textResult.message || 'Failed to send intro message')
+          throw new Error(textResult.error?.message || textResult.message || 'Failed to send text message')
         }
 
         console.log('✅ Text message sent successfully')
 
-        // Wait a bit before sending attachment
+        // Small delay between text and attachment
         await new Promise(resolve => setTimeout(resolve, 1000))
 
-        // Send vCard attachment
+        // Step 2: Send vCard attachment using FormData (like send-attachment does)
         console.log('📎 Step 2: Sending vCard attachment...')
         
-        // Ensure we have the base64 string
-        if (!vCardBase64 || vCardBase64.length === 0) {
-          throw new Error('vCard base64 is empty')
-        }
+        // Create FormData for the attachment
+        const attachmentFormData = new FormData()
+        attachmentFormData.append('chatGuid', chatGuid)
+        attachmentFormData.append('name', 'Missouri Young Democrats.vcf')
+        attachmentFormData.append('attachment', vCardBlob, 'Missouri Young Democrats.vcf')
+        attachmentFormData.append('method', 'private-api')
+        attachmentFormData.append('tempGuid', `intro_vcard_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`)
 
-        console.log('📎 Attachment details:', {
-          base64Length: vCardBase64.length,
-          chatGuid: chatGuid
-        })
+        console.log('📎 Sending attachment via FormData')
 
         const attachmentResponse = await fetch(
           `${BB_HOST}/api/v1/message/attachment?password=${BB_PASSWORD}`,
           {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              chatGuid: chatGuid,
-              attachment: vCardBase64,  // Raw base64 string
-              name: 'Missouri Young Democrats.vcf',
-              method: 'private-api',
-              tempGuid: `intro_vcard_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
-            }),
+            body: attachmentFormData,  // Send as FormData, not JSON!
           }
         )
 
@@ -240,7 +225,6 @@ Reply STOP to opt out of future messages.`
         }
 
         // Track the delivery in contact_card_interactions
-        // FIXED: Removed .catch() and using proper error handling
         if (introSendId) {
           const { error: interactionError } = await supabase
             .from('contact_card_interactions')
@@ -269,7 +253,6 @@ Reply STOP to opt out of future messages.`
         console.error(`❌ Failed to send intro to ${recipient.name}:`, error)
         
         // Update intro_send record to failed
-        // FIXED: Removed .catch() and using proper error handling
         if (introSendId) {
           const { error: updateError } = await supabase
             .from('intro_sends')
@@ -354,7 +337,7 @@ function generateVCard() {
       contentLength: vCardContent.length
     })
 
-    // Create Blob
+    // Create Blob (for FormData)
     return new Blob([vCardContent], { type: 'text/vcard' })
   } catch (error) {
     console.error('Error generating vCard:', error)
