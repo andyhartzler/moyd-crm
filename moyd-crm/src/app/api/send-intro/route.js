@@ -125,8 +125,9 @@ export async function POST(request) {
         introSendId = introSend.id
         console.log(`✅ Created intro_send record: ${introSendId}`)
 
-        // 🔥 CRITICAL FIX: Use consistent GUID pattern that webhook can match
+        // Generate temp GUIDs
         const textTempGuid = `temp-intro-text-${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+        const vCardTempGuid = `temp-intro-vcard-${Date.now() + 1}_${Math.random().toString(36).substr(2, 9)}`
         
         console.log('📨 Step 1: Sending text message with tempGuid:', textTempGuid)
         
@@ -187,30 +188,24 @@ export async function POST(request) {
         // Step 2: Send vCard attachment
         console.log('📎 Step 2: Sending vCard attachment...')
         
-        // 🔥 CRITICAL: Generate temp GUID for vCard
-        const vCardTempGuid = `temp-intro-vcard-${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
-        
-        // 🔥 NEW: Save vCard message to database BEFORE sending (optimistic)
+        // 🔥 CRITICAL: Save vCard message to database BEFORE sending (optimistic)
         console.log('💾 Saving vCard message optimistically with tempGuid:', vCardTempGuid)
         const { error: vCardMsgError } = await supabase
           .from('messages')
           .insert({
             conversation_id: conversationId,
-            body: '', // Empty body for attachment
+            body: '\ufffc', // Object replacement character for attachments
             direction: 'outbound',
-            delivery_status: 'sending', // Mark as sending, webhook will update to delivered
+            delivery_status: 'sending', // Mark as sending, webhook will update
             sender_phone: recipient.phone,
             guid: vCardTempGuid,
             is_read: true,
-            created_at: new Date(Date.now() + 1).toISOString(), // 1ms after text
-            attachments: [{
-              transfer_name: 'Missouri Young Democrats.vcf',
-              mime_type: 'text/vcard'
-            }]
+            created_at: new Date(Date.now() + 2).toISOString() // 2ms after text
           })
         
         if (vCardMsgError) {
           console.error('⚠️ Error saving vCard message:', vCardMsgError)
+          // Continue anyway - webhook might still work
         } else {
           console.log('✅ vCard message saved optimistically')
         }
@@ -230,7 +225,7 @@ export async function POST(request) {
         
         console.log('📎 Submitting vCard with tempGuid:', vCardTempGuid)
 
-        // 🔥 IMPROVED: Fire-and-forget with better timeout handling
+        // Fire-and-forget with timeout handling
         const controller = new AbortController()
         const timeoutId = setTimeout(() => {
           console.log('⏱️ BlueBubbles timeout (30s) - attachment is queued and will send in background')
