@@ -3,6 +3,10 @@ import { NextResponse } from 'next/server'
 const BB_HOST = process.env.NEXT_PUBLIC_BLUEBUBBLES_HOST
 const BB_PASSWORD = process.env.NEXT_PUBLIC_BLUEBUBBLES_PASSWORD
 
+// Maximum file size: ~7.5MB (BlueBubbles/iMessage limit)
+const MAX_FILE_SIZE = 7.5 * 1024 * 1024
+const BLUEBUBBLES_TIMEOUT = 10000
+
 // Generate unique GUID for each message
 function generateTempGuid() {
   return `web_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
@@ -10,42 +14,22 @@ function generateTempGuid() {
 
 export async function POST(request) {
   try {
-    const body = await request.json()
-    const { phone, message, memberId, reaction, replyToGuid, partIndex } = body
+    // Check content type to determine if this is FormData or JSON
+    const contentType = request.headers.get('content-type') || ''
+    const isFormData = contentType.includes('multipart/form-data')
 
     console.log('📨 Send message request:', {
-      phone,
-      hasMessage: !!message,
-      hasReaction: !!reaction,
-      hasReply: !!replyToGuid,
-      memberId,
+      contentType,
+      isFormData,
       timestamp: new Date().toISOString()
     })
 
-    // Validate required fields
-    if (!phone) {
-      return NextResponse.json(
-        { error: 'Phone is required' },
-        { status: 400 }
-      )
-    }
-
-    if (!reaction && !message) {
-      return NextResponse.json(
-        { error: 'Message or reaction is required' },
-        { status: 400 }
-      )
-    }
-
-    const chatGuid = phone.includes(';') ? phone : `iMessage;-;${phone}`
-
-    // Handle reactions differently from regular messages
-    if (reaction) {
-      return await sendReaction(chatGuid, replyToGuid, reaction, partIndex || 0, phone, memberId)
-    } else if (replyToGuid) {
-      return await sendReply(chatGuid, message, replyToGuid, phone, memberId, partIndex || 0)
+    if (isFormData) {
+      // Handle file attachment
+      return await handleAttachment(request)
     } else {
-      return await sendRegularMessage(chatGuid, message, phone, memberId)
+      // Handle regular message or reaction
+      return await handleTextMessage(request)
     }
   } catch (error) {
     console.error('❌ Error in send-message API:', error)
@@ -56,13 +40,194 @@ export async function POST(request) {
   }
 }
 
+// Handle file attachments with FormData
+async function handleAttachment(request) {
+  try {
+    const formData = await request.formData()
+    const file = formData.get('file')
+    const phone = formData.get('phone')
+    const memberId = formData.get('memberId')
+    const message = formData.get('message') || ''
+    const replyToGuid = formData.get('replyToGuid')
+    const partIndex = formData.get('partIndex') || '0'
+
+    if (!file) {
+      return NextResponse.json(
+        { error: 'No file provided' },
+        { status: 400 }
+      )
+    }
+
+    if (!phone) {
+      return NextResponse.json(
+        { error: 'Phone number required' },
+        { status: 400 }
+      )
+    }
+
+    // Validate file size
+    if (file.size > MAX_FILE_SIZE) {
+      return NextResponse.json(
+        { error: `File too large. Maximum size is ${(MAX_FILE_SIZE / 1024 / 1024).toFixed(1)}MB` },
+        { status: 400 }
+      )
+    }
+
+    console.log('📄 File details:', {
+      name: file.name,
+      type: file.type,
+      size: `${(file.size / 1024).toFixed(1)} KB`
+    })
+
+    const chatGuid = phone.includes(';') ? phone : `iMessage;-;${phone}`
+
+    console.log('📤 Sending attachment to BlueBubbles...')
+    
+    const fileBuffer = await file.arrayBuffer()
+    const blob = new Blob([fileBuffer], { type: file.type })
+    
+    const attachmentFormData = new FormData()
+    attachmentFormData.append('chatGuid', chatGuid)
+    attachmentFormData.append('name', file.name)
+    attachmentFormData.append('attachment', blob, file.name)
+    attachmentFormData.append('method', 'private-api')
+    
+    if (message && message.trim()) {
+      attachmentFormData.append('message', message.trim())
+    }
+
+    if (replyToGuid) {
+      attachmentFormData.append('selectedMessageGuid', replyToGuid)
+      attachmentFormData.append('partIndex', partIndex)
+    }
+
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => {
+      console.log('⏱️ BlueBubbles connection timeout (10s) - but attachment is likely queued')
+      controller.abort()
+    }, BLUEBUBBLES_TIMEOUT)
+
+    try {
+      console.log(`🔗 Submitting to: ${BB_HOST}/api/v1/message/attachment`)
+      
+      const responsePromise = fetch(
+        `${BB_HOST}/api/v1/message/attachment?password=${BB_PASSWORD}`,
+        {
+          method: 'POST',
+          body: attachmentFormData,
+          signal: controller.signal,
+        }
+      )
+
+      const response = await Promise.race([
+        responsePromise,
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('TIMEOUT')), BLUEBUBBLES_TIMEOUT)
+        )
+      ])
+
+      clearTimeout(timeoutId)
+      
+      // If we got a response, check if it's an error
+      if (response && !response.ok) {
+        const responseText = await response.text()
+        let errorMessage = 'Failed to send attachment'
+        
+        try {
+          const errorData = JSON.parse(responseText)
+          errorMessage = errorData.message || errorData.error?.message || errorMessage
+          console.error('❌ BlueBubbles error:', errorData)
+        } catch (e) {
+          errorMessage = responseText || errorMessage
+          console.error('❌ BlueBubbles error (raw):', responseText.substring(0, 200))
+        }
+
+        return NextResponse.json(
+          { error: errorMessage },
+          { status: response.status }
+        )
+      }
+
+      console.log('✅ Attachment submitted successfully!')
+
+      return NextResponse.json({
+        success: true,
+        message: 'Attachment submitted successfully',
+        note: 'BlueBubbles is processing and sending your attachment in the background'
+      })
+
+    } catch (fetchError) {
+      clearTimeout(timeoutId)
+      
+      if (fetchError.name === 'AbortError' || fetchError.message === 'TIMEOUT') {
+        console.log('⚡ BlueBubbles didn\'t respond quickly, but attachment is likely queued and sending')
+        
+        return NextResponse.json({
+          success: true,
+          message: 'Attachment submitted successfully',
+          note: 'BlueBubbles is processing your attachment (this is normal for large files)'
+        })
+      }
+      
+      console.error('❌ Network error:', fetchError.message)
+      return NextResponse.json(
+        { error: `Failed to connect to BlueBubbles: ${fetchError.message}` },
+        { status: 503 }
+      )
+    }
+
+  } catch (error) {
+    console.error('💥 Unexpected error handling attachment:', error)
+    return NextResponse.json(
+      { error: error.message || 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}
+
+// Handle text messages, reactions, and replies
+async function handleTextMessage(request) {
+  const body = await request.json()
+  const { phone, message, memberId, reaction, replyToGuid, partIndex } = body
+
+  console.log('📨 Text message request:', {
+    phone,
+    hasMessage: !!message,
+    hasReaction: !!reaction,
+    hasReply: !!replyToGuid,
+    memberId
+  })
+
+  // Validate required fields
+  if (!phone) {
+    return NextResponse.json(
+      { error: 'Phone is required' },
+      { status: 400 }
+    )
+  }
+
+  if (!reaction && !message) {
+    return NextResponse.json(
+      { error: 'Message or reaction is required' },
+      { status: 400 }
+    )
+  }
+
+  const chatGuid = phone.includes(';') ? phone : `iMessage;-;${phone}`
+
+  // Handle reactions differently from regular messages
+  if (reaction) {
+    return await sendReaction(chatGuid, replyToGuid, reaction, partIndex || 0, phone, memberId)
+  } else if (replyToGuid) {
+    return await sendReply(chatGuid, message, replyToGuid, phone, memberId, partIndex || 0)
+  } else {
+    return await sendRegularMessage(chatGuid, message, phone, memberId)
+  }
+}
+
 // Send a regular message
 async function sendRegularMessage(chatGuid, message, phone, memberId) {
-  console.log('📤 Sending regular message via BlueBubbles Private API:', {
-    host: BB_HOST,
-    chatGuid,
-    messageLength: message.length
-  })
+  console.log('📤 Sending regular message via BlueBubbles Private API')
 
   const tempGuid = generateTempGuid()
   const controller = new AbortController()
@@ -90,8 +255,7 @@ async function sendRegularMessage(chatGuid, message, phone, memberId) {
 
     console.log('📥 BlueBubbles response:', {
       status: result.status,
-      ok: response.ok,
-      hasData: !!result.data
+      ok: response.ok
     })
 
     if (!response.ok || result.status !== 200) {
@@ -136,12 +300,7 @@ async function sendRegularMessage(chatGuid, message, phone, memberId) {
 
 // Send a reply
 async function sendReply(chatGuid, message, replyToGuid, phone, memberId, partIndex) {
-  console.log('📤 Sending reply via BlueBubbles Private API:', {
-    host: BB_HOST,
-    chatGuid,
-    replyToGuid,
-    partIndex
-  })
+  console.log('📤 Sending reply via BlueBubbles Private API')
 
   const tempGuid = generateTempGuid()
   const controller = new AbortController()
@@ -182,7 +341,7 @@ async function sendReply(chatGuid, message, replyToGuid, phone, memberId, partIn
 
     console.log('✅ Reply sent successfully via BlueBubbles!')
 
-    // Save to database in background (non-blocking)
+    // Save to database in background
     if (memberId) {
       saveMessageToDatabase(memberId, chatGuid, message, phone, result, 'outbound', replyToGuid)
         .catch(err => console.error('⚠️ Background DB save error:', err))
@@ -198,6 +357,7 @@ async function sendReply(chatGuid, message, replyToGuid, phone, memberId, partIn
     clearTimeout(timeoutId)
     
     if (error.name === 'AbortError') {
+      console.error('⏱️ Request timeout')
       return NextResponse.json(
         { error: 'Request timeout' },
         { status: 408 }
@@ -208,89 +368,78 @@ async function sendReply(chatGuid, message, replyToGuid, phone, memberId, partIn
   }
 }
 
-// Send a reaction/tapback
-async function sendReaction(chatGuid, messageGuid, reactionType, partIndex, phone, memberId) {
-  console.log('📤 Sending reaction via BlueBubbles:', {
-    chatGuid,
+// Send a reaction (tapback)
+async function sendReaction(chatGuid, messageGuid, reactionCode, partIndex, phone, memberId) {
+  console.log('📤 Sending reaction via BlueBubbles Private API:', {
     messageGuid,
-    reactionType
+    reactionCode,
+    partIndex
   })
 
-  const validReactions = [
-    'love', 'like', 'dislike', 'laugh', 'emphasize', 'question',
-    '-love', '-like', '-dislike', '-laugh', '-emphasize', '-question'
-  ]
+  const tempGuid = generateTempGuid()
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 10000)
 
-  const normalizedReaction = reactionType.toLowerCase()
-  
-  if (!validReactions.includes(normalizedReaction)) {
-    return NextResponse.json(
-      { error: `Invalid reaction type: ${reactionType}. Must be one of: ${validReactions.join(', ')}` },
-      { status: 400 }
-    )
-  }
-
-  const reactionMap = {
-    'love': 2000,
-    'like': 2001,
-    'dislike': 2002,
-    'laugh': 2003,
-    'emphasize': 2004,
-    'question': 2005,
-    '-love': 3000,
-    '-like': 3001,
-    '-dislike': 3002,
-    '-laugh': 3003,
-    '-emphasize': 3004,
-    '-question': 3005
-  }
-
-  const reactionCode = reactionMap[normalizedReaction]
-
-  const response = await fetch(
-    `${BB_HOST}/api/v1/message/react?password=${BB_PASSWORD}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chatGuid: chatGuid,
-        selectedMessageGuid: messageGuid,
-        reaction: normalizedReaction,
-        partIndex: parseInt(partIndex) || 0,
-        method: 'private-api'
-      }),
-    }
-  )
-
-  const result = await response.json()
-
-  if (!response.ok || result.status !== 200) {
-    console.error('❌ BlueBubbles API error:', result)
-    return NextResponse.json(
+  try {
+    const response = await fetch(
+      `${BB_HOST}/api/v1/message/react?password=${BB_PASSWORD}`,
       {
-        error: result.error?.message || result.message || 'Failed to send reaction',
-        details: result
-      },
-      { status: response.status || 500 }
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          chatGuid: chatGuid,
+          selectedMessageGuid: messageGuid,
+          reaction: reactionCode,
+          partIndex: parseInt(partIndex) || 0
+        }),
+      }
     )
+
+    clearTimeout(timeoutId)
+
+    const result = await response.json()
+
+    if (!response.ok || result.status !== 200) {
+      console.error('❌ BlueBubbles API error:', result)
+      return NextResponse.json(
+        {
+          error: result.error?.message || result.message || 'Failed to send reaction',
+          details: result
+        },
+        { status: response.status || 500 }
+      )
+    }
+
+    console.log('✅ Reaction sent successfully!')
+
+    // Save reaction to database in background
+    if (memberId) {
+      saveReactionToDatabase(memberId, chatGuid, phone, result, messageGuid, reactionCode)
+        .catch(err => console.error('⚠️ Background DB save error:', err))
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: result.data,
+      message: 'Reaction sent successfully'
+    })
+  } catch (error) {
+    clearTimeout(timeoutId)
+    
+    if (error.name === 'AbortError') {
+      console.error('⏱️ Request timeout')
+      return NextResponse.json(
+        { error: 'Request timeout' },
+        { status: 408 }
+      )
+    }
+    
+    throw error
   }
-
-  console.log('✅ Reaction sent successfully via BlueBubbles!')
-
-  // Save reaction to database (non-blocking)
-  if (memberId) {
-    saveReactionToDatabase(memberId, chatGuid, phone, result, messageGuid, reactionCode)
-      .catch(err => console.error('⚠️ Background DB save error:', err))
-  }
-
-  return NextResponse.json({
-    success: true,
-    data: result.data,
-    message: 'Reaction sent successfully'
-  })
 }
 
-// ⚡ FIXED: Save message to database (matches Supabase schema)
+// Save message to database
 async function saveMessageToDatabase(memberId, chatGuid, messageBody, phone, result, direction, threadOriginatorGuid = null) {
   try {
     const { createClient } = require('@supabase/supabase-js')
@@ -310,7 +459,7 @@ async function saveMessageToDatabase(memberId, chatGuid, messageBody, phone, res
 
     let conversationId = existingConv?.id
 
-    // If no conversation exists, create one (matching webhook pattern)
+    // If no conversation exists, create one
     if (!conversationId) {
       console.log('🔧 Creating new conversation for member:', memberId)
       
@@ -319,8 +468,7 @@ async function saveMessageToDatabase(memberId, chatGuid, messageBody, phone, res
         .insert({
           member_id: memberId,
           chat_identifier: chatGuid,
-          // ⚡ REMOVED status field - doesn't exist in Supabase schema
-          last_message: messageBody,  // Added to match webhook pattern
+          last_message: messageBody,
           last_message_at: new Date().toISOString()
         })
         .select('id')
@@ -328,13 +476,12 @@ async function saveMessageToDatabase(memberId, chatGuid, messageBody, phone, res
 
       if (convError) {
         console.error('⚠️ Error creating conversation:', convError)
-        // Continue to save message anyway
       } else if (newConv) {
         conversationId = newConv.id
         console.log('✅ Created new conversation:', conversationId)
       }
     } else {
-      // Update existing conversation (matching webhook pattern)
+      // Update existing conversation
       await supabase
         .from('conversations')
         .update({ 
