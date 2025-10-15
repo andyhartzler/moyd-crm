@@ -13,19 +13,19 @@ const supabase = createClient(
 
 // Contact information for MO Young Democrats
 const CONTACT_INFO = {
-  firstName: 'Missouri',
-  lastName: 'Young Democrats',
+  firstName: 'Missouri Young Democrats',
+  lastName: '',
   name: 'Missouri Young Democrats',
-  organization: 'Missouri Young Democrats',
+  organization: '',
   phone: '+18165300773',
   email: 'info@moyoungdemocrats.org',
   website: 'https://moyoungdemocrats.org',
   address: {
     poBox: '',
-    street: '',
+    street: 'PO Box 270043',
     city: 'Kansas City',
     state: 'Missouri',
-    zip: '64101',
+    zip: '64127',
     country: 'United States'
   }
 }
