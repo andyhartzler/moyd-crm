@@ -71,85 +71,6 @@ export async function POST(request) {
   }
 }
 
-// 🔥 IMPROVED: Better GUID matching and status update logic
-async function findAndUpdateMessage(blueBubblesMessage) {
-  try {
-    const { guid, text, dateCreated } = blueBubblesMessage
-    
-    // Strategy 1: Try to find by exact GUID
-    let { data: existingMessage } = await supabase
-      .from('messages')
-      .select('*')
-      .eq('guid', guid)
-      .maybeSingle()
-
-    if (existingMessage) {
-      console.log('✅ Found message by exact GUID')
-      return existingMessage
-    }
-
-    // Strategy 2: Find by temp GUID pattern and match by content + time
-    const recentTime = new Date(Date.now() - 60000).toISOString() // Last 60 seconds
-    const { data: recentMessages } = await supabase
-      .from('messages')
-      .select('*')
-      .eq('direction', 'outbound')
-      .gte('created_at', recentTime)
-      .or('guid.like.%temp%,delivery_status.eq.sending,delivery_status.eq.sent')
-      .order('created_at', { ascending: false })
-      .limit(20)
-
-    if (recentMessages && recentMessages.length > 0) {
-      // Try to match by body content
-      const matchedMessage = recentMessages.find(m => {
-        // Handle empty body for attachments
-        if (!text || text === '\ufffc') {
-          return m.body === text || m.body === '' || m.body === '\ufffc'
-        }
-        return m.body === text
-      })
-      
-      if (matchedMessage) {
-        console.log('✅ Matched message by content! Updating GUID from', matchedMessage.guid, 'to', guid)
-        
-        // Update the GUID to the real one
-        await supabase
-          .from('messages')
-          .update({ guid: guid })
-          .eq('id', matchedMessage.id)
-        
-        return { ...matchedMessage, guid: guid }
-      }
-
-      // Strategy 3: If we have a contact card intro send, match by time proximity
-      if (text === '\ufffc' || !text) {
-        const messageTime = new Date(dateCreated).getTime()
-        const timeMatchedMessage = recentMessages.find(m => {
-          const msgTime = new Date(m.created_at).getTime()
-          const timeDiff = Math.abs(messageTime - msgTime)
-          return timeDiff < 5000 && (m.body === '' || m.body === '\ufffc')
-        })
-
-        if (timeMatchedMessage) {
-          console.log('✅ Matched attachment message by time proximity')
-          await supabase
-            .from('messages')
-            .update({ guid: guid })
-            .eq('id', timeMatchedMessage.id)
-          
-          return { ...timeMatchedMessage, guid: guid }
-        }
-      }
-    }
-
-    console.log('⚠️ Could not find existing message to update')
-    return null
-  } catch (error) {
-    console.error('❌ Error in findAndUpdateMessage:', error)
-    return null
-  }
-}
-
 // Check if message is an opt-out or opt-in request
 async function checkOptOutOptIn(message, normalizedPhone, memberId) {
   if (!message.text || typeof message.text !== 'string') return
@@ -266,9 +187,10 @@ async function handleNewMessage(message) {
       return await handleIncomingReaction(message)
     }
 
-    // 🔥 CRITICAL: Check if this is OUR outbound message coming back via webhook
+    // 🔥 CRITICAL FIX: Check if this is OUR outbound message coming back via webhook
+    // BlueBubbles sends back messages WE send via the API
     if (message.isFromMe) {
-      console.log('📤 This is an outbound message we sent, updating status')
+      console.log('📤 This is an outbound message we sent, handling specially')
       return await handleOutboundMessageUpdate(message)
     }
 
@@ -301,45 +223,56 @@ async function handleNewMessage(message) {
       }
     }
 
-    console.log('Normalized phone:', normalizedPhone)
+    console.log('Looking for member with phone:', normalizedPhone)
 
-    // Find or create member
+    // Find member
     const { data: members, error: memberError } = await supabase
       .from('members')
-      .select('id, opt_out')
+      .select('id, name')
       .eq('phone_e164', normalizedPhone)
-      .maybeSingle()
+      .single()
 
-    if (!members) {
-      console.log('Member not found, cannot process message')
+    if (memberError || !members) {
+      console.log('Member not found:', normalizedPhone)
       return
     }
 
-    // Check for opt-out/opt-in keywords
+    console.log('Found member:', members.id)
+
+    // Check for opt-out/opt-in keywords BEFORE saving message
     await checkOptOutOptIn(message, normalizedPhone, members.id)
 
-    // Get or create conversation
-    let conversation = null
+    // Get message text for last_message field
+    let messageBody = message.text || ''
+    
+    // Handle attachment-only messages
+    if (message.hasAttachments && (!messageBody || messageBody.trim() === '')) {
+      messageBody = '\ufffc' // Unicode attachment character
+    }
+
+    // Find or create conversation
     const { data: existingConv } = await supabase
       .from('conversations')
       .select('id')
       .eq('member_id', members.id)
       .maybeSingle()
 
-    const messageBody = message.text || (message.attachments && message.attachments.length > 0 ? '\ufffc' : '')
-
+    let conversation
     if (existingConv) {
       console.log('Updating existing conversation')
-      await supabase
+      const { data: updatedConv } = await supabase
         .from('conversations')
-        .update({
+        .update({ 
+          updated_at: new Date().toISOString(),
           last_message: messageBody,
-          last_message_at: new Date(message.dateCreated).toISOString(),
-          updated_at: new Date().toISOString()
+          last_message_at: new Date(message.dateCreated).toISOString()
         })
         .eq('id', existingConv.id)
+        .select()
+        .single()
       
-      conversation = existingConv
+      conversation = updatedConv
+
     } else {
       console.log('Creating new conversation')
       const { data: newConv } = await supabase
@@ -360,12 +293,16 @@ async function handleNewMessage(message) {
       return
     }
 
-    // Construct media URL
-    let mediaUrl = null
+    // 🔥 CRITICAL FIX: Build attachments array properly
+    let attachments = []
     if (message.attachments && message.attachments.length > 0) {
-      const attachment = message.attachments[0]
-      mediaUrl = `${BB_HOST}/api/v1/attachment/${attachment.guid}/download?password=${BB_PASSWORD}`
-      console.log('Message has attachment:', attachment.guid)
+      attachments = message.attachments.map(att => ({
+        guid: att.guid,
+        transfer_name: att.transferName,
+        mime_type: att.mimeType,
+        total_bytes: att.totalBytes
+      }))
+      console.log('Message has', attachments.length, 'attachment(s)')
     }
 
     // Create the message
@@ -390,9 +327,9 @@ async function handleNewMessage(message) {
     if (message.threadOriginatorGuid) {
       messageData.thread_originator_guid = message.threadOriginatorGuid
     }
-    if (mediaUrl) {
-      messageData.media_url = mediaUrl
-      console.log('Saved media URL to message')
+    if (attachments.length > 0) {
+      messageData.attachments = attachments
+      console.log('Saved', attachments.length, 'attachments to message')
     }
     if (message.dateDelivered) {
       messageData.date_delivered = new Date(message.dateDelivered).toISOString()
@@ -416,16 +353,95 @@ async function handleNewMessage(message) {
   }
 }
 
-// 🔥 IMPROVED: Handle outbound messages with better GUID matching
+// 🔥 CRITICAL FIX: Improved outbound message matching with attachment support
 async function handleOutboundMessageUpdate(message) {
   try {
     console.log('📤 Processing outbound message update:', message.guid?.substring(0, 20))
+    console.log('Message details:', {
+      text: message.text?.substring(0, 50),
+      hasAttachments: message.hasAttachments,
+      attachmentCount: message.attachments?.length || 0
+    })
 
-    // Use improved finding logic
-    const existingMessage = await findAndUpdateMessage(message)
+    // Try to find the message by GUID first
+    let { data: existingMessage } = await supabase
+      .from('messages')
+      .select('*')
+      .eq('guid', message.guid)
+      .maybeSingle()
 
+    // If not found by real GUID, try to find by tempGuid pattern
+    if (!existingMessage) {
+      console.log('🔍 Message not found by GUID, checking for recent temp messages')
+      
+      // Find messages from last 60 seconds with temp GUIDs
+      const recentTime = new Date(Date.now() - 60000).toISOString()
+      const { data: recentMessages } = await supabase
+        .from('messages')
+        .select('*')
+        .eq('direction', 'outbound')
+        .gte('created_at', recentTime)
+        .like('guid', '%temp%')
+        .order('created_at', { ascending: false })
+        .limit(20)
+
+      console.log(`Found ${recentMessages?.length || 0} recent temp messages`)
+
+      if (recentMessages && recentMessages.length > 0) {
+        // Strategy 1: Match by body content (for text messages)
+        if (message.text && message.text.trim()) {
+          existingMessage = recentMessages.find(m => m.body === message.text)
+          if (existingMessage) {
+            console.log('✅ Matched message by text content')
+          }
+        }
+
+        // Strategy 2: Match by attachment characteristics (for attachment messages)
+        if (!existingMessage && message.hasAttachments && message.attachments?.length > 0) {
+          // Look for intro messages (they have specific text pattern)
+          const isIntroMessage = message.text?.includes('Thanks for connecting with MO Young Democrats')
+          
+          if (isIntroMessage) {
+            // Match intro messages by the intro text pattern
+            existingMessage = recentMessages.find(m => 
+              m.guid.includes('temp-intro') && 
+              m.body?.includes('Thanks for connecting with MO Young Democrats')
+            )
+            if (existingMessage) {
+              console.log('✅ Matched INTRO message by text pattern')
+            }
+          } else {
+            // Match other attachment messages by timing (most recent attachment message)
+            existingMessage = recentMessages.find(m => 
+              m.guid.includes('temp_attachment') || 
+              (m.body === '' || m.body === null)
+            )
+            if (existingMessage) {
+              console.log('✅ Matched ATTACHMENT message by pattern')
+            }
+          }
+        }
+
+        // Strategy 3: If still not found, match by timing (most recent message)
+        if (!existingMessage && recentMessages.length > 0) {
+          existingMessage = recentMessages[0]
+          console.log('⚠️ Matched message by timing (most recent)')
+        }
+        
+        if (existingMessage) {
+          console.log('🔧 Updating GUID from', existingMessage.guid, 'to', message.guid)
+          
+          // Update the GUID to the real one
+          await supabase
+            .from('messages')
+            .update({ guid: message.guid })
+            .eq('id', existingMessage.id)
+        }
+      }
+    }
+
+    // Now update the message with delivery status AND attachments
     if (existingMessage) {
-      // Update the message with delivery status
       const updateData = {
         delivery_status: 'delivered'
       }
@@ -439,10 +455,15 @@ async function handleOutboundMessageUpdate(message) {
         updateData.date_read = new Date(message.dateRead).toISOString()
       }
 
-      // Add media URL if it's an attachment message
-      if (message.attachments && message.attachments.length > 0 && !existingMessage.media_url) {
-        const attachment = message.attachments[0]
-        updateData.media_url = `${BB_HOST}/api/v1/attachment/${attachment.guid}/download?password=${BB_PASSWORD}`
+      // 🔥 CRITICAL FIX: Add attachments data if present
+      if (message.hasAttachments && message.attachments && message.attachments.length > 0) {
+        updateData.attachments = message.attachments.map(att => ({
+          guid: att.guid,
+          transfer_name: att.transferName,
+          mime_type: att.mimeType,
+          total_bytes: att.totalBytes
+        }))
+        console.log('📎 Adding', updateData.attachments.length, 'attachment(s) to message')
       }
 
       const { error } = await supabase
@@ -453,59 +474,10 @@ async function handleOutboundMessageUpdate(message) {
       if (error) {
         console.error('Error updating outbound message:', error)
       } else {
-        console.log('✅ Outbound message status updated successfully')
+        console.log('✅ Outbound message updated successfully with attachments')
       }
     } else {
-      console.log('⚠️ Could not find existing message to update - creating new record')
-      
-      // If we can't find it, treat it as a new outbound message
-      // This might happen if the send API didn't save to DB properly
-      // We should still record it
-      let phone = null
-      if (message.chats && message.chats.length > 0) {
-        const chatId = message.chats[0].chatIdentifier
-        phone = chatId.includes(';-;') ? chatId.split(';-;')[1] : chatId
-      }
-
-      if (phone) {
-        let normalizedPhone = phone.replace(/[\s\-\(\)]/g, '')
-        if (!normalizedPhone.startsWith('+')) {
-          normalizedPhone = normalizedPhone.startsWith('1') && normalizedPhone.length === 11 
-            ? '+' + normalizedPhone 
-            : '+1' + normalizedPhone
-        }
-
-        const { data: member } = await supabase
-          .from('members')
-          .select('id')
-          .eq('phone_e164', normalizedPhone)
-          .maybeSingle()
-
-        if (member) {
-          const { data: conversation } = await supabase
-            .from('conversations')
-            .select('id')
-            .eq('member_id', member.id)
-            .maybeSingle()
-
-          if (conversation) {
-            await supabase
-              .from('messages')
-              .insert({
-                conversation_id: conversation.id,
-                body: message.text || '',
-                direction: 'outbound',
-                delivery_status: 'delivered',
-                sender_phone: normalizedPhone,
-                guid: message.guid,
-                is_read: true,
-                created_at: new Date(message.dateCreated).toISOString(),
-                date_delivered: message.dateDelivered ? new Date(message.dateDelivered).toISOString() : null
-              })
-            console.log('✅ Created new outbound message record')
-          }
-        }
-      }
+      console.log('⚠️ Could not find existing message to update')
     }
   } catch (error) {
     console.error('Error handling outbound message update:', error)
@@ -658,11 +630,8 @@ async function handleUpdatedMessage(data) {
     if (message.dateRead) {
       updateData.is_read = true
       updateData.date_read = new Date(message.dateRead).toISOString()
-    } else if (message.isRead !== undefined) {
-      updateData.is_read = message.isRead
     }
 
-    // Only update if there's something to update
     if (Object.keys(updateData).length > 0) {
       const { error } = await supabase
         .from('messages')
@@ -672,40 +641,25 @@ async function handleUpdatedMessage(data) {
       if (error) {
         console.error('Error updating message:', error)
       } else {
-        console.log('✅ Message updated successfully:', message.guid?.substring(0, 20))
+        console.log('✅ Message updated successfully')
       }
     }
   } catch (error) {
-    console.error('Error handling message update:', error)
+    console.error('Error handling updated message:', error)
   }
 }
 
 async function handleTypingIndicator(data) {
   try {
-    console.log('⌨️ Typing indicator data:', data)
-
-    // Extract phone from chat identifier
-    let phone = null
+    const { display, typing } = data
     
-    if (data.chat) {
-      if (data.chat.includes(';-;')) {
-        phone = data.chat.split(';-;')[1]
-      } else {
-        phone = data.chat
-      }
-    } else if (data.chatGuid) {
-      if (data.chatGuid.includes(';-;')) {
-        phone = data.chatGuid.split(';-;')[1]
-      } else {
-        phone = data.chatGuid
-      }
-    }
+    if (!display) return
 
-    if (!phone) {
-      console.log('No phone found in typing indicator')
-      return
-    }
+    console.log('⌨️ Typing indicator:', display, typing)
 
+    // Extract phone number from display
+    let phone = display.replace(/^iMessage;-;/, '')
+    
     // Normalize phone
     let normalizedPhone = phone.replace(/[\s\-\(\)]/g, '')
     if (!normalizedPhone.startsWith('+')) {
@@ -729,13 +683,11 @@ async function handleTypingIndicator(data) {
     }
 
     // Update typing status
-    const isTyping = data.display === true || data.typing === true
-
     const { error } = await supabase
       .from('members')
-      .update({ 
-        is_typing: isTyping,
-        last_typing_at: isTyping ? new Date().toISOString() : null
+      .update({
+        is_typing: typing,
+        last_typing_at: typing ? new Date().toISOString() : null
       })
       .eq('id', members.id)
 
