@@ -406,32 +406,13 @@ function MessengerContent() {
     setGroupMessageThreads(threads)
   }
 
-  // 🔥 FIXED: Handler for Send Intro button - only create optimistic TEXT message
-  // The vCard will be saved to database by the backend and shown via realtime subscription
+  // 🔥 FIXED: Handler for Send Intro button - NO optimistic messages
+  // Let the backend save to database and realtime subscription will show everything
   const handleSendIntro = async () => {
     if (!phone || !memberId) return
 
     setSendingIntro(true)
     setError(null)
-
-    // 🔥 FIX: Only create optimistic TEXT message (not vCard)
-    // The backend saves the vCard to the database, and realtime subscription will show it
-    const timestamp = Date.now()
-    const textTempGuid = `temp-intro-text-${timestamp}`
-    
-    const optimisticTextMessage = {
-      guid: textTempGuid,
-      body: `Hi! Thanks for connecting with MO Young Democrats.\n\nTap the contact card below to save our info.\n\nReply STOP to opt out of future messages.`,
-      direction: 'outbound',
-      created_at: new Date().toISOString(),
-      delivery_status: 'sending',
-      is_read: true
-    }
-
-    // 🔥 CRITICAL: Only add TEXT message to UI, not vCard
-    // vCard will appear automatically from database via realtime subscription
-    setMessages(prev => [...prev, optimisticTextMessage])
-    scrollToBottom(true)
 
     try {
       const response = await fetch('/api/send-intro', {
@@ -454,18 +435,12 @@ function MessengerContent() {
       const result = await response.json()
       console.log('✅ Intro sent:', result)
 
-      // 🔥 FIX: The webhook will update the database, and realtime subscription will update UI
-      // Remove optimistic text message after delay - the real one will appear from database
-      setTimeout(() => {
-        setMessages(prev => prev.filter(m => m.guid !== textTempGuid))
-      }, 3000)
+      // Messages will appear automatically via realtime subscription
+      // No need to manually add or remove anything!
 
     } catch (err) {
       console.error('❌ Send intro error:', err)
       setError(err.message || 'Failed to send intro')
-      
-      // Remove optimistic message on error
-      setMessages(prev => prev.filter(m => m.guid !== textTempGuid))
     } finally {
       setSendingIntro(false)
     }
@@ -478,21 +453,15 @@ function MessengerContent() {
     setLoading(true)
     setError(null)
 
-    // Create optimistic message
-    const tempGuid = `temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
-    const optimisticMessage = {
-      guid: tempGuid,
-      body: selectedFile ? (message.trim() || `📎 ${selectedFile.name}`) : message,
-      direction: 'outbound',
-      created_at: new Date().toISOString(),
-      delivery_status: 'sending',
-      is_read: true,
-      sender_phone: phone
-    }
+    // Store message content before clearing
+    const messageToSend = message
+    const fileToSend = selectedFile
+    const replyToSend = replyingTo
 
-    // Add to UI immediately
-    setMessages(prev => [...prev, optimisticMessage])
-    scrollToBottom(true)
+    // Clear inputs immediately for better UX
+    setMessage('')
+    setSelectedFile(null)
+    setReplyingTo(null)
 
     try {
       const payload = {
@@ -500,20 +469,20 @@ function MessengerContent() {
         memberId
       }
 
-      if (selectedFile) {
+      if (fileToSend) {
         setUploadingFile(true)
         
         const formData = new FormData()
-        formData.append('file', selectedFile)
+        formData.append('file', fileToSend)
         formData.append('phone', phone)
         formData.append('memberId', memberId)
         
-        if (message.trim()) {
-          formData.append('message', message)
+        if (messageToSend.trim()) {
+          formData.append('message', messageToSend)
         }
 
-        if (replyingTo) {
-          formData.append('replyToGuid', replyingTo.guid)
+        if (replyToSend) {
+          formData.append('replyToGuid', replyToSend.guid)
           formData.append('partIndex', '0')
         }
 
@@ -527,15 +496,12 @@ function MessengerContent() {
           throw new Error(errorData.error || 'Failed to send attachment')
         }
 
-        setSelectedFile(null)
-        setMessage('')
-        setReplyingTo(null)
         setUploadingFile(false)
       } else {
-        payload.message = message
+        payload.message = messageToSend
 
-        if (replyingTo) {
-          payload.replyToGuid = replyingTo.guid
+        if (replyToSend) {
+          payload.replyToGuid = replyToSend.guid
           payload.partIndex = 0
         }
 
@@ -549,22 +515,19 @@ function MessengerContent() {
           const errorData = await response.json()
           throw new Error(errorData.error || 'Failed to send message')
         }
-
-        setMessage('')
-        setReplyingTo(null)
       }
 
-      // Remove optimistic message after delay - realtime will add the real one
-      setTimeout(() => {
-        setMessages(prev => prev.filter(m => m.guid !== tempGuid))
-      }, 3000)
+      // Message will appear automatically via realtime subscription
+      scrollToBottom(true)
 
     } catch (err) {
       console.error('Error sending message:', err)
       setError(err.message || 'Failed to send message')
       
-      // Remove optimistic message on error
-      setMessages(prev => prev.filter(m => m.guid !== tempGuid))
+      // Restore inputs on error
+      setMessage(messageToSend)
+      setSelectedFile(fileToSend)
+      setReplyingTo(replyToSend)
     } finally {
       setLoading(false)
     }
