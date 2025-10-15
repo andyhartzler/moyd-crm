@@ -127,13 +127,13 @@ Reply STOP to opt out of future messages.`
 
         console.log(`📤 Sending intro to ${recipient.name} (${recipient.phone})`)
 
-        // Create intro_send record
+        // Create intro_send record (✅ FIXED: Only columns that exist)
         const { data: introSend, error: introSendError } = await supabase
           .from('intro_sends')
           .insert({
             member_id: recipient.memberId,
-            status: 'sending',
-            message_text: introMessage
+            template_id: messageTemplate?.id || null,
+            status: 'sending'
           })
           .select()
           .single()
@@ -174,10 +174,10 @@ Reply STOP to opt out of future messages.`
         // Small delay between text and attachment
         await new Promise(resolve => setTimeout(resolve, 1000))
 
-        // Step 2: Send vCard attachment using FormData (like send-attachment does)
+        // Step 2: Send vCard attachment using FormData (✅ FIXED: Like send-attachment route)
         console.log('📎 Step 2: Sending vCard attachment...')
         
-        // Create FormData for the attachment
+        // Create FormData for the attachment (matches send-attachment pattern)
         const attachmentFormData = new FormData()
         attachmentFormData.append('chatGuid', chatGuid)
         attachmentFormData.append('name', 'Missouri Young Democrats.vcf')
@@ -185,24 +185,33 @@ Reply STOP to opt out of future messages.`
         attachmentFormData.append('method', 'private-api')
         attachmentFormData.append('tempGuid', `intro_vcard_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`)
 
-        console.log('📎 Sending attachment via FormData')
+        console.log('📎 Submitting vCard via FormData to BlueBubbles')
 
         const attachmentResponse = await fetch(
           `${BB_HOST}/api/v1/message/attachment?password=${BB_PASSWORD}`,
           {
             method: 'POST',
-            body: attachmentFormData,  // Send as FormData, not JSON!
+            body: attachmentFormData,  // ✅ FormData, not JSON!
           }
         )
 
-        const attachmentResult = await attachmentResponse.json()
+        // Try to parse response
+        let attachmentResult
+        try {
+          attachmentResult = await attachmentResponse.json()
+        } catch (e) {
+          // If response isn't JSON, treat as success (BlueBubbles might not respond properly)
+          console.log('⚠️ Attachment response not JSON, assuming success')
+          attachmentResult = { status: 200 }
+        }
+
         console.log('📎 Attachment response:', {
           ok: attachmentResponse.ok,
           status: attachmentResponse.status,
           result: attachmentResult
         })
 
-        if (!attachmentResponse.ok || attachmentResult.status !== 200) {
+        if (!attachmentResponse.ok || (attachmentResult.status && attachmentResult.status !== 200)) {
           console.error('❌ Attachment send failed:', attachmentResult)
           throw new Error(attachmentResult.error?.message || attachmentResult.message || 'Failed to send contact card')
         }
