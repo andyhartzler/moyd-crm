@@ -52,8 +52,7 @@ export async function POST(request) {
     
     console.log('📎 vCard generated:', {
       size: vCardBlob.size,
-      hasPhoto: !!logoBase64,
-      preview: vCardContent.substring(0, 200) + '...'
+      preview: vCardContent.substring(0, 50) + '...'
     })
 
     const results = []
@@ -65,53 +64,64 @@ export async function POST(request) {
         const introMessage = `Hi! Thanks for connecting with MO Young Democrats.\n\nTap the contact card below to save our info.\n\nReply STOP to opt out of future messages.`
         
         const chatGuid = recipient.phone?.includes(';') 
-          ? `iMessage;-;${recipient.phone}`
-          : `SMS;-;${recipient.phone}`
+          ? recipient.phone 
+          : `iMessage;-;${recipient.phone}`
 
-        console.log(`\n📱 Sending to ${recipient.name} (${recipient.phone})`)
+        console.log(`📤 Sending intro to ${recipient.name} (${recipient.phone})`)
+
+        // Get or create conversation
+        let conversationId
+        const { data: existingConv } = await supabase
+          .from('conversations')
+          .select('id')
+          .eq('member_id', recipient.memberId)
+          .maybeSingle()
+
+        if (existingConv) {
+          conversationId = existingConv.id
+          await supabase
+            .from('conversations')
+            .update({ 
+              updated_at: new Date().toISOString(),
+              last_message: introMessage,
+              last_message_at: new Date().toISOString()
+            })
+            .eq('id', conversationId)
+        } else {
+          const { data: newConv } = await supabase
+            .from('conversations')
+            .insert({
+              member_id: recipient.memberId,
+              last_message: introMessage,
+              last_message_at: new Date().toISOString()
+            })
+            .select()
+            .single()
+          
+          conversationId = newConv.id
+        }
 
         // Create intro_send record
         const { data: introSend, error: introSendError } = await supabase
           .from('intro_sends')
           .insert({
-            member_id: recipient.id,
-            status: 'pending'
+            member_id: recipient.memberId,
+            template_id: null,
+            status: 'sending'
           })
           .select()
           .single()
-
+        
         if (introSendError) {
-          throw new Error(`Failed to create intro_send record: ${introSendError.message}`)
+          console.error('Error creating intro_send record:', introSendError)
+          throw new Error('Failed to create send record')
         }
 
         introSendId = introSend.id
+        console.log(`✅ Created intro_send record: ${introSendId}`)
 
-        // Get or create conversation
-        let { data: conversation } = await supabase
-          .from('conversations')
-          .select('id')
-          .eq('phone_number', recipient.phone)
-          .single()
-
-        if (!conversation) {
-          const { data: newConv, error: convError } = await supabase
-            .from('conversations')
-            .insert({
-              phone_number: recipient.phone,
-              member_id: recipient.id,
-              last_message_at: new Date().toISOString()
-            })
-            .select()
-            .single()
-
-          if (convError) throw convError
-          conversation = newConv
-        }
-
-        const conversationId = conversation.id
-
-        // Step 1: Send text message
-        console.log('📝 Step 1: Sending text message...')
+        // 🔥 CRITICAL FIX: Send message FIRST, get real GUID, THEN save to database
+        console.log('📨 Step 1: Sending text message to BlueBubbles...')
         
         const textResponse = await fetch(
           `${BB_HOST}/api/v1/message/text?password=${BB_PASSWORD}`,
@@ -122,20 +132,20 @@ export async function POST(request) {
               chatGuid: chatGuid,
               message: introMessage,
               method: 'private-api'
-            })
+            }),
           }
         )
 
         if (!textResponse.ok) {
-          throw new Error(`Text message failed: ${textResponse.statusText}`)
+          throw new Error(`Failed to send text: ${textResponse.status}`)
         }
 
         const textResult = await textResponse.json()
         
-        // 🔥 CRITICAL: Extract real GUID from BlueBubbles response
+        // 🔥 CRITICAL: Extract the REAL GUID from BlueBubbles response
         const realTextGuid = textResult.data?.guid
         
-        console.log('📝 Text message response - Real GUID:', realTextGuid)
+        console.log('📨 Text sent! Real GUID:', realTextGuid)
 
         if (textResult.status !== 200 && textResult.message !== 'Message sent!') {
           throw new Error(textResult.error?.message || 'Failed to send text message')
@@ -378,31 +388,20 @@ function generateVCard(contact, logoBase64) {
     // Format: ADR;TYPE=WORK:;;street;city;state;zip;country
     // For PO Box: ADR;TYPE=WORK:;PO Box;city;state;zip;country
     lines.push(`ADR;TYPE=WORK:;;${poBox};${city};${state};${zip};${country}`)
+    
+    console.log('📝 vCard generated with CORRECT address:', {
+      lines: lines.length,
+      hasPhoto: !!logoBase64,
+      contentLength: lines.join('\r\n').length + (logoBase64 ? logoBase64.length : 0),
+      phone: contact.phone,
+      poBox: poBox,
+      zip: zip
+    })
   }
 
-  // 🔥 FIX: Add photo with proper line wrapping (vCard 3.0 spec requires wrapping at 75 chars)
+  // Add photo if available
   if (logoBase64) {
-    const photoHeader = 'PHOTO;ENCODING=b;TYPE=PNG:'
-    const photoLine = photoHeader + logoBase64
-    
-    // vCard 3.0 requires lines longer than 75 chars to be folded with CRLF + space
-    if (photoLine.length > 75) {
-      lines.push(photoHeader)
-      // Split base64 data into 75-character chunks and prefix continuation lines with a space
-      for (let i = 0; i < logoBase64.length; i += 75) {
-        const chunk = logoBase64.substring(i, i + 75)
-        lines.push(' ' + chunk) // Space prefix indicates continuation
-      }
-    } else {
-      lines.push(photoLine)
-    }
-    
-    console.log('📝 vCard generated with photo:', {
-      lines: lines.length,
-      photoSize: logoBase64.length,
-      photoChunks: Math.ceil(logoBase64.length / 75),
-      phone: contact.phone
-    })
+    lines.push('PHOTO;ENCODING=b;TYPE=PNG:' + logoBase64)
   }
 
   lines.push('END:VCARD')
