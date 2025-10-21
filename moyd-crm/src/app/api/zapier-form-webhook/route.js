@@ -324,12 +324,12 @@ export async function POST(request) {
       }
     }
 
-    // Helper function to safely convert Yes/No to boolean (only for true boolean fields)
+    // Helper function to safely convert Yes/No to boolean (only for the 2 boolean fields)
     const toBoolean = (value) => {
-      if (!value || value === '') return null
+      if (!value || value === '' || value === 'Prefer not to say') return null
       if (value === 'Yes') return true
       if (value === 'No') return false
-      return null // Default to null for any unexpected value
+      return null
     }
 
     // Get county and congressional district from address
@@ -345,21 +345,21 @@ export async function POST(request) {
       phone_e164: phone_e164,
       date_of_birth: formData.date_of_birth,
       preferred_pronouns: formData.preferred_pronouns,
-      gender_identity: formData.gender_identity, // Text: stores "Prefer not to say"
+      gender_identity: formData.gender_identity, // TEXT
       address: formData.address,
       county: county,
       congressional_district: congressional_district,
-      race: formData.race, // Text: stores "Prefer not to say"
-      sexual_orientation: formData.sexual_orientation, // Text: stores "Prefer not to say"
-      desire_to_lead: toBoolean(formData.desire_to_lead), // Boolean: Yes/No only
+      race: formData.race, // TEXT
+      sexual_orientation: formData.sexual_orientation, // TEXT
+      desire_to_lead: formData.desire_to_lead, // TEXT (stores "Yes", "No", or "Prefer not to say")
       hours_per_week: formData.hours_per_week,
       education_level: formData.education_level,
-      registered_voter: toBoolean(formData.registered_voter), // Boolean: Yes/No only
-      in_school: formData.in_school, // Text: stores "Yes", "No", or "Prefer not to say"
+      registered_voter: toBoolean(formData.registered_voter), // BOOLEAN
+      in_school: formData.in_school, // TEXT (stores "Yes", "No", or "Prefer not to say")
       school_name: formData.school_name,
-      employed: formData.employed, // Text: stores "Yes", "No", or "Prefer not to say"
+      employed: formData.employed, // TEXT (stores "Yes", "No", or "Prefer not to say")
       industry: formData.industry,
-      hispanic_latino: formData.hispanic_latino,
+      hispanic_latino: toBoolean(formData.hispanic_latino), // BOOLEAN
       accommodations: formData.accommodations,
       community_type: formData.community_type,
       languages: formData.languages,
