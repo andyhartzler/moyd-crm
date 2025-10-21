@@ -10,7 +10,7 @@ const BLUEBUBBLES_TIMEOUT = 15000 // 15 seconds
 
 // Generate unique GUID for each message
 function generateTempGuid() {
-  return `web_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+  return `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
 }
 
 // 🔥 FIX: Map reaction codes to string names for BlueBubbles API
@@ -90,12 +90,10 @@ async function saveAttachmentToDatabase(memberId, chatGuid, phone, fileName, mes
     const messageData = {
       conversation_id: conversation.id,
       guid: generateTempGuid(),
-      body: message || (isVCard ? 'Contact Card' : '\ufffc'), // Use descriptive body for vCards
+      body: message || (isVCard ? 'Contact Card' : '\ufffc'),
       direction: 'outbound',
       delivery_status: 'sending',
-      media_url: fileName, // Store filename for now
-      // Don't try to set is_contact_card since the column doesn't exist
-      // We'll detect vCards by checking if media_url ends with .vcf
+      media_url: fileName,
       created_at: new Date().toISOString()
     }
 
@@ -226,13 +224,14 @@ async function handleAttachment(request) {
 
     // Convert file to buffer
     const buffer = Buffer.from(await file.arrayBuffer())
-    const base64Data = buffer.toString('base64')
 
     // Prepare BlueBubbles attachment payload
     const attachmentPayload = new FormData()
     attachmentPayload.append('chatGuid', chatGuid)
     attachmentPayload.append('name', file.name)
     attachmentPayload.append('attachment', new Blob([buffer], { type: file.type }), file.name)
+    attachmentPayload.append('method', 'private-api')
+    attachmentPayload.append('tempGuid', generateTempGuid()) // 🔥 FIX: Added tempGuid
     
     if (message) {
       attachmentPayload.append('message', message)
@@ -346,7 +345,7 @@ async function handleTextMessage(request) {
   const chatGuid = phone.includes(';') ? phone : `iMessage;-;${phone}`
 
   try {
-    // 🔥 FIX: Handle reactions with correct BlueBubbles API format
+    // Handle reactions with correct BlueBubbles API format
     if (reaction) {
       console.log(`💙 Sending ${reaction} reaction...`)
       
@@ -357,20 +356,18 @@ async function handleTextMessage(request) {
         )
       }
 
-      // 🔥 FIX: BlueBubbles expects reaction type as STRING (e.g., "love", "like")
-      // not as integer code (2000, 2001)
       const reactionType = reaction.toLowerCase()
       const part = parseInt(partIndex) || 0
 
       console.log('🎯 Reaction details:', {
         chatGuid,
         selectedMessageGuid: replyToGuid,
-        reactionType, // Now sending string like "love" instead of 2000
+        reactionType,
         partIndex: part
       })
 
       const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 10000)
+      const timeoutId = setTimeout(() => controller.abort(), BLUEBUBBLES_TIMEOUT)
 
       try {
         const response = await fetch(
@@ -381,7 +378,7 @@ async function handleTextMessage(request) {
             body: JSON.stringify({
               chatGuid,
               selectedMessageGuid: replyToGuid,
-              reactionType, // 🔥 FIX: Send string type, not integer
+              reactionType,
               partIndex: part
             }),
             signal: controller.signal
@@ -397,7 +394,6 @@ async function handleTextMessage(request) {
           throw new Error(result.error?.message || result.message || 'Failed to send reaction')
         }
 
-        // 🔥 FIX: Get the reaction code from the reaction type string for database storage
         const REACTION_TYPE_TO_CODE = {
           'love': 2000,
           'like': 2001,
@@ -447,10 +443,12 @@ async function handleTextMessage(request) {
     if (message) {
       console.log(`💬 Sending message${replyToGuid ? ' (reply)' : ''}...`)
 
+      // 🔥 FIX: Use private-api method with tempGuid
       const messagePayload = {
         chatGuid,
         message,
-        method: 'apple-script'
+        method: 'private-api',      // ✅ FIXED: Changed from 'apple-script'
+        tempGuid: generateTempGuid() // ✅ FIXED: Added tempGuid
       }
 
       // Add reply info if present
