@@ -1,13 +1,20 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 
-export async function POST(request) {
-  // Initialize Supabase client inside the function (runtime, not build time)
-  const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_ROLE_KEY
-  )
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+)
 
+// Add this GET handler for browser visits
+export async function GET() {
+  return NextResponse.json({ 
+    message: 'Zapier webhook endpoint is working! Use POST to submit data.',
+    status: 'ready'
+  })
+}
+
+export async function POST(request) {
   try {
     const formData = await request.json()
     
@@ -22,7 +29,7 @@ export async function POST(request) {
       }
     }
 
-    // Upsert member (update if exists, insert if new)
+    // Upsert member
     const { data, error } = await supabase
       .from('members')
       .upsert({
