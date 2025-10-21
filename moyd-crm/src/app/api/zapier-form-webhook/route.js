@@ -1,12 +1,13 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY // Use service role key for server
-)
-
 export async function POST(request) {
+  // Initialize Supabase client inside the function (runtime, not build time)
+  const supabase = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_ROLE_KEY
+  )
+
   try {
     const formData = await request.json()
     
@@ -52,9 +53,9 @@ export async function POST(request) {
         why_join: formData.why_join,
         committee: formData.committee,
         notes: formData.notes,
-        created_at: new Date().toISOString(), // Add timestamp
+        created_at: new Date().toISOString(),
       }, {
-        onConflict: 'email' // Use email as unique identifier
+        onConflict: 'email'
       })
 
     if (error) throw error
