@@ -1,15 +1,158 @@
 import { NextResponse } from 'next/server'
+import { supabase } from '@/lib/supabase'
 
 const BB_HOST = process.env.NEXT_PUBLIC_BLUEBUBBLES_HOST
 const BB_PASSWORD = process.env.NEXT_PUBLIC_BLUEBUBBLES_PASSWORD
 
 // Maximum file size: ~7.5MB (BlueBubbles/iMessage limit)
 const MAX_FILE_SIZE = 7.5 * 1024 * 1024
-const BLUEBUBBLES_TIMEOUT = 15000 // Increased to 15 seconds
+const BLUEBUBBLES_TIMEOUT = 15000 // 15 seconds
 
 // Generate unique GUID for each message
 function generateTempGuid() {
   return `web_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+}
+
+// 🔥 FIX: Map reaction codes to string names for BlueBubbles API
+const REACTION_CODE_TO_TYPE = {
+  2000: 'love',
+  2001: 'like',
+  2002: 'dislike',
+  2003: 'laugh',
+  2004: 'emphasize',
+  2005: 'question',
+  3000: '-love',
+  3001: '-like',
+  3002: '-dislike',
+  3003: '-laugh',
+  3004: '-emphasize',
+  3005: '-question'
+}
+
+// Helper function to save reaction to database
+async function saveReactionToDatabase(memberId, chatGuid, phone, blueBubblesResponse, associatedMessageGuid, reactionType) {
+  try {
+    // Get conversation
+    const { data: conversation } = await supabase
+      .from('conversations')
+      .select('id')
+      .eq('member_id', memberId)
+      .maybeSingle()
+
+    if (!conversation) {
+      console.log('⚠️ No conversation found for reaction')
+      return
+    }
+
+    // Save reaction as a message with associated_message_type
+    const reactionData = {
+      conversation_id: conversation.id,
+      guid: blueBubblesResponse.data?.guid || generateTempGuid(),
+      body: '', // Reactions have empty body
+      direction: 'outbound',
+      delivery_status: 'sent',
+      associated_message_guid: associatedMessageGuid,
+      associated_message_type: reactionType, // Store the code (2000, 2001, etc.)
+      created_at: new Date().toISOString()
+    }
+
+    const { error } = await supabase
+      .from('messages')
+      .insert(reactionData)
+
+    if (error) {
+      console.error('❌ Error saving reaction to database:', error)
+    } else {
+      console.log('✅ Reaction saved to database')
+    }
+  } catch (err) {
+    console.error('❌ Error in saveReactionToDatabase:', err)
+  }
+}
+
+// Helper function to save attachment to database
+async function saveAttachmentToDatabase(memberId, chatGuid, phone, fileName, message) {
+  try {
+    const { data: conversation } = await supabase
+      .from('conversations')
+      .select('id')
+      .eq('member_id', memberId)
+      .maybeSingle()
+
+    if (!conversation) {
+      console.log('⚠️ No conversation found')
+      return
+    }
+
+    // 🔥 FIX: Detect if this is a vCard file
+    const isVCard = fileName.toLowerCase().endsWith('.vcf')
+
+    const messageData = {
+      conversation_id: conversation.id,
+      guid: generateTempGuid(),
+      body: message || (isVCard ? 'Contact Card' : '\ufffc'), // Use descriptive body for vCards
+      direction: 'outbound',
+      delivery_status: 'sending',
+      media_url: fileName, // Store filename for now
+      // Don't try to set is_contact_card since the column doesn't exist
+      // We'll detect vCards by checking if media_url ends with .vcf
+      created_at: new Date().toISOString()
+    }
+
+    const { error } = await supabase
+      .from('messages')
+      .insert(messageData)
+
+    if (error) {
+      console.error('❌ Error saving attachment to database:', error)
+    } else {
+      console.log('✅ Attachment saved to database')
+    }
+  } catch (err) {
+    console.error('❌ Error in saveAttachmentToDatabase:', err)
+  }
+}
+
+// Helper function to save text message to database
+async function saveTextMessageToDatabase(memberId, chatGuid, phone, blueBubblesResponse, messageText, replyToGuid) {
+  try {
+    const { data: conversation } = await supabase
+      .from('conversations')
+      .select('id')
+      .eq('member_id', memberId)
+      .maybeSingle()
+
+    if (!conversation) {
+      console.log('⚠️ No conversation found')
+      return
+    }
+
+    const messageData = {
+      conversation_id: conversation.id,
+      guid: blueBubblesResponse.data?.guid || generateTempGuid(),
+      body: messageText,
+      direction: 'outbound',
+      delivery_status: 'sent',
+      created_at: new Date().toISOString()
+    }
+
+    // Add thread info if it's a reply
+    if (replyToGuid) {
+      messageData.thread_originator_guid = replyToGuid
+    }
+
+    const { error } = await supabase
+      .from('messages')
+      .insert(messageData)
+
+    if (error) {
+      console.error('❌ Error saving message to database:', error)
+    } else {
+      console.log('✅ Message saved to database')
+    }
+  } catch (err) {
+    console.error('❌ Error in saveTextMessageToDatabase:', err)
+  }
 }
 
 export async function POST(request) {
@@ -81,79 +224,49 @@ async function handleAttachment(request) {
 
     const chatGuid = phone.includes(';') ? phone : `iMessage;-;${phone}`
 
-    console.log('📤 Sending attachment to BlueBubbles...')
+    // Convert file to buffer
+    const buffer = Buffer.from(await file.arrayBuffer())
+    const base64Data = buffer.toString('base64')
+
+    // Prepare BlueBubbles attachment payload
+    const attachmentPayload = new FormData()
+    attachmentPayload.append('chatGuid', chatGuid)
+    attachmentPayload.append('name', file.name)
+    attachmentPayload.append('attachment', new Blob([buffer], { type: file.type }), file.name)
     
-    // 🔥 CRITICAL FIX: Convert file properly for BlueBubbles
-    const fileBuffer = await file.arrayBuffer()
-    const blob = new Blob([fileBuffer], { type: file.type || 'application/octet-stream' })
-    
-    const attachmentFormData = new FormData()
-    attachmentFormData.append('chatGuid', chatGuid)
-    attachmentFormData.append('name', file.name)
-    attachmentFormData.append('attachment', blob, file.name)
-    attachmentFormData.append('method', 'private-api')
-    
-    if (message && message.trim()) {
-      attachmentFormData.append('message', message.trim())
+    if (message) {
+      attachmentPayload.append('message', message)
     }
 
     if (replyToGuid) {
-      attachmentFormData.append('selectedMessageGuid', replyToGuid)
-      attachmentFormData.append('partIndex', partIndex)
+      attachmentPayload.append('selectedMessageGuid', replyToGuid)
+      attachmentPayload.append('partIndex', partIndex)
     }
 
+    console.log('📤 Submitting attachment to BlueBubbles...')
+
+    // Set up abort controller for timeout
     const controller = new AbortController()
-    const timeoutId = setTimeout(() => {
-      console.log('⏱️ BlueBubbles connection timeout - but attachment is likely queued')
-      controller.abort()
-    }, BLUEBUBBLES_TIMEOUT)
+    const timeoutId = setTimeout(() => controller.abort(), BLUEBUBBLES_TIMEOUT)
 
     try {
-      console.log(`🔗 Submitting to: ${BB_HOST}/api/v1/message/attachment`)
-      
       const response = await fetch(
         `${BB_HOST}/api/v1/message/attachment?password=${BB_PASSWORD}`,
         {
           method: 'POST',
-          body: attachmentFormData,
-          signal: controller.signal,
+          body: attachmentPayload,
+          signal: controller.signal
         }
       )
 
       clearTimeout(timeoutId)
-      
-      // 🔥 CRITICAL FIX: Handle non-JSON responses properly
-      const responseText = await response.text()
-      let result
-      
-      try {
-        result = JSON.parse(responseText)
-      } catch (e) {
-        console.log('⚠️ Response is not JSON:', responseText.substring(0, 200))
-        
-        // If response was successful but not JSON, treat as success
-        if (response.ok || response.status === 200) {
-          result = { status: 200, message: 'Attachment sent successfully' }
-        } else {
-          return NextResponse.json(
-            { error: 'BlueBubbles returned non-JSON error response' },
-            { status: response.status }
-          )
-        }
-      }
 
-      // Check if it's an error response
-      if (!response.ok && result.status !== 200) {
-        const errorMessage = result.message || result.error?.message || 'Failed to send attachment'
-        console.error('❌ BlueBubbles error:', result)
-        
-        return NextResponse.json(
-          { error: errorMessage },
-          { status: response.status }
-        )
-      }
+      const result = await response.json()
+      console.log('📎 BlueBubbles attachment response:', result)
 
-      console.log('✅ Attachment submitted successfully!')
+      if (!response.ok || result.status !== 200) {
+        throw new Error(result.error?.message || result.message || 'Failed to send attachment')
+      }
 
       // Save to database in background if memberId provided
       if (memberId) {
@@ -163,15 +276,15 @@ async function handleAttachment(request) {
 
       return NextResponse.json({
         success: true,
-        message: 'Attachment submitted successfully',
-        note: 'BlueBubbles is processing and sending your attachment in the background'
+        message: 'Attachment sent successfully',
+        data: result.data
       })
 
     } catch (fetchError) {
       clearTimeout(timeoutId)
       
       if (fetchError.name === 'AbortError') {
-        console.log('⚡ BlueBubbles didn\'t respond quickly, but attachment is likely queued and sending')
+        console.log('⏱️ BlueBubbles timeout - attachment queued and sending in background')
         
         // Save to database anyway since it's likely queued
         if (memberId) {
@@ -233,7 +346,7 @@ async function handleTextMessage(request) {
   const chatGuid = phone.includes(';') ? phone : `iMessage;-;${phone}`
 
   try {
-    // Handle reactions
+    // 🔥 FIX: Handle reactions with correct BlueBubbles API format
     if (reaction) {
       console.log(`💙 Sending ${reaction} reaction...`)
       
@@ -244,312 +357,174 @@ async function handleTextMessage(request) {
         )
       }
 
-      const reactionCode = parseInt(reaction)
-      if (isNaN(reactionCode)) {
-        return NextResponse.json(
-          { error: 'Invalid reaction code' },
-          { status: 400 }
-        )
-      }
-
-      const messageGuid = replyToGuid
+      // 🔥 FIX: BlueBubbles expects reaction type as STRING (e.g., "love", "like")
+      // not as integer code (2000, 2001)
+      const reactionType = reaction.toLowerCase()
       const part = parseInt(partIndex) || 0
+
+      console.log('🎯 Reaction details:', {
+        chatGuid,
+        selectedMessageGuid: replyToGuid,
+        reactionType, // Now sending string like "love" instead of 2000
+        partIndex: part
+      })
 
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 10000)
 
-      const response = await fetch(
-        `${BB_HOST}/api/v1/message/react?password=${BB_PASSWORD}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chatGuid,
-            selectedMessageGuid: messageGuid,
-            reaction: reactionCode,
-            partIndex: part
-          }),
-          signal: controller.signal
+      try {
+        const response = await fetch(
+          `${BB_HOST}/api/v1/message/react?password=${BB_PASSWORD}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              chatGuid,
+              selectedMessageGuid: replyToGuid,
+              reactionType, // 🔥 FIX: Send string type, not integer
+              partIndex: part
+            }),
+            signal: controller.signal
+          }
+        )
+
+        clearTimeout(timeoutId)
+
+        const result = await response.json()
+        console.log('💙 Reaction response:', result)
+
+        if (!response.ok || result.status !== 200) {
+          throw new Error(result.error?.message || result.message || 'Failed to send reaction')
         }
-      )
 
-      clearTimeout(timeoutId)
+        // 🔥 FIX: Get the reaction code from the reaction type string for database storage
+        const REACTION_TYPE_TO_CODE = {
+          'love': 2000,
+          'like': 2001,
+          'dislike': 2002,
+          'laugh': 2003,
+          'emphasize': 2004,
+          'question': 2005,
+          '-love': 3000,
+          '-like': 3001,
+          '-dislike': 3002,
+          '-laugh': 3003,
+          '-emphasize': 3004,
+          '-question': 3005
+        }
 
-      const result = await response.json()
+        const reactionCode = REACTION_TYPE_TO_CODE[reactionType] || 2000
 
-      if (!response.ok || result.status !== 200) {
-        throw new Error(result.error?.message || result.message || 'Failed to send reaction')
+        // Save reaction to database in background
+        if (memberId) {
+          saveReactionToDatabase(memberId, chatGuid, phone, result, replyToGuid, reactionCode)
+            .catch(err => console.error('⚠️ Background DB save error:', err))
+        }
+
+        return NextResponse.json({
+          success: true,
+          data: result.data,
+          message: 'Reaction sent successfully'
+        })
+
+      } catch (fetchError) {
+        clearTimeout(timeoutId)
+        
+        if (fetchError.name === 'AbortError') {
+          console.log('⏱️ BlueBubbles reaction timeout - may still be processing')
+          return NextResponse.json({
+            success: true,
+            message: 'Reaction submitted (processing)',
+            note: 'BlueBubbles is processing your reaction'
+          })
+        }
+        
+        throw fetchError
       }
-
-      // Save reaction to database in background
-      if (memberId) {
-        saveReactionToDatabase(memberId, chatGuid, phone, result, messageGuid, reactionCode)
-          .catch(err => console.error('⚠️ Background DB save error:', err))
-      }
-
-      return NextResponse.json({
-        success: true,
-        data: result.data,
-        message: 'Reaction sent successfully'
-      })
     }
 
     // Handle regular messages and replies
     if (message) {
       console.log(`💬 Sending message${replyToGuid ? ' (reply)' : ''}...`)
 
-      let threadOriginatorGuid = null
-      
-      if (replyToGuid) {
-        console.log('📎 This is a reply to:', replyToGuid)
-        threadOriginatorGuid = replyToGuid
-      }
-
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 10000)
-
-      const requestBody = {
+      const messagePayload = {
         chatGuid,
         message,
-        method: 'private-api',
-        tempGuid: generateTempGuid()
+        method: 'apple-script'
       }
 
+      // Add reply info if present
       if (replyToGuid) {
-        requestBody.selectedMessageGuid = replyToGuid
-        requestBody.partIndex = parseInt(partIndex) || 0
+        messagePayload.selectedMessageGuid = replyToGuid
+        messagePayload.partIndex = parseInt(partIndex) || 0
       }
 
-      const response = await fetch(
-        `${BB_HOST}/api/v1/message/text?password=${BB_PASSWORD}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(requestBody),
-          signal: controller.signal
+      console.log('📤 Message payload:', messagePayload)
+
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), BLUEBUBBLES_TIMEOUT)
+
+      try {
+        const response = await fetch(
+          `${BB_HOST}/api/v1/message/text?password=${BB_PASSWORD}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(messagePayload),
+            signal: controller.signal
+          }
+        )
+
+        clearTimeout(timeoutId)
+
+        const result = await response.json()
+        console.log('💬 Message response:', result)
+
+        if (!response.ok || result.status !== 200) {
+          throw new Error(result.error?.message || result.message || 'Failed to send message')
         }
-      )
 
-      clearTimeout(timeoutId)
+        // Save to database in background
+        if (memberId) {
+          saveTextMessageToDatabase(memberId, chatGuid, phone, result, message, replyToGuid)
+            .catch(err => console.error('⚠️ Background DB save error:', err))
+        }
 
-      const result = await response.json()
+        return NextResponse.json({
+          success: true,
+          data: result.data,
+          message: 'Message sent successfully'
+        })
 
-      if (!response.ok || result.status !== 200) {
-        throw new Error(result.error?.message || result.message || 'Failed to send message')
+      } catch (fetchError) {
+        clearTimeout(timeoutId)
+        
+        if (fetchError.name === 'AbortError') {
+          console.log('⏱️ BlueBubbles message timeout - may still be processing')
+          
+          // Save to database anyway since it's likely queued
+          if (memberId) {
+            const fallbackResponse = { data: { guid: generateTempGuid() } }
+            saveTextMessageToDatabase(memberId, chatGuid, phone, fallbackResponse, message, replyToGuid)
+              .catch(err => console.error('⚠️ Background DB save error:', err))
+          }
+          
+          return NextResponse.json({
+            success: true,
+            message: 'Message submitted successfully',
+            note: 'BlueBubbles is processing your message'
+          })
+        }
+        
+        throw fetchError
       }
-
-      // Save message to database in background
-      if (memberId) {
-        saveMessageToDatabase(memberId, chatGuid, message, phone, result, 'outbound', threadOriginatorGuid)
-          .catch(err => console.error('⚠️ Background DB save error:', err))
-      }
-
-      return NextResponse.json({
-        success: true,
-        data: result.data,
-        message: 'Message sent successfully'
-      })
     }
 
   } catch (error) {
-    if (error.name === 'AbortError') {
-      console.error('⏱️ Request timeout')
-      return NextResponse.json(
-        { error: 'Request timeout' },
-        { status: 408 }
-      )
-    }
-    
-    throw error
-  }
-}
-
-// Save message to database
-async function saveMessageToDatabase(memberId, chatGuid, messageBody, phone, result, direction, threadOriginatorGuid = null) {
-  try {
-    const { createClient } = require('@supabase/supabase-js')
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+    console.error('❌ Error sending message:', error)
+    return NextResponse.json(
+      { error: error.message || 'Failed to send message' },
+      { status: 500 }
     )
-
-    console.log('💾 Saving message to database...')
-
-    // Find existing conversation or create one
-    const { data: existingConv } = await supabase
-      .from('conversations')
-      .select('id')
-      .eq('member_id', memberId)
-      .maybeSingle()
-
-    let conversationId
-    if (existingConv) {
-      conversationId = existingConv.id
-      
-      // Update conversation
-      await supabase
-        .from('conversations')
-        .update({
-          last_message: messageBody,
-          last_message_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', conversationId)
-    } else {
-      const { data: newConv } = await supabase
-        .from('conversations')
-        .insert({
-          member_id: memberId,
-          last_message: messageBody,
-          last_message_at: new Date().toISOString()
-        })
-        .select()
-        .single()
-      
-      conversationId = newConv.id
-    }
-
-    // Save message (🔥 REMOVED has_attachments field)
-    const messageData = {
-      conversation_id: conversationId,
-      body: messageBody,
-      direction: direction,
-      delivery_status: direction === 'outbound' ? 'sent' : 'delivered',
-      sender_phone: phone,
-      guid: result.data?.guid || `temp_${Date.now()}`,
-      is_read: direction === 'outbound',
-      created_at: new Date().toISOString()
-    }
-
-    if (threadOriginatorGuid) {
-      messageData.thread_originator_guid = threadOriginatorGuid
-    }
-
-    const { error: msgError } = await supabase
-      .from('messages')
-      .insert(messageData)
-
-    if (msgError) {
-      console.error('⚠️ Error creating message:', msgError)
-    } else {
-      console.log('✅ Message saved to database!')
-    }
-  } catch (error) {
-    console.error('❌ Database error (message was still sent):', error)
-  }
-}
-
-// Save attachment to database (🔥 REMOVED has_attachments field)
-async function saveAttachmentToDatabase(memberId, chatGuid, phone, fileName, message) {
-  try {
-    const { createClient } = require('@supabase/supabase-js')
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-    )
-
-    console.log('💾 Saving attachment message to database...')
-
-    // Find existing conversation or create one
-    const { data: existingConv } = await supabase
-      .from('conversations')
-      .select('id')
-      .eq('member_id', memberId)
-      .maybeSingle()
-
-    let conversationId
-    const displayMessage = message || `📎 ${fileName}`
-    
-    if (existingConv) {
-      conversationId = existingConv.id
-      
-      // Update conversation
-      await supabase
-        .from('conversations')
-        .update({
-          last_message: displayMessage,
-          last_message_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', conversationId)
-    } else {
-      const { data: newConv } = await supabase
-        .from('conversations')
-        .insert({
-          member_id: memberId,
-          last_message: displayMessage,
-          last_message_at: new Date().toISOString()
-        })
-        .select()
-        .single()
-      
-      conversationId = newConv.id
-    }
-
-    // Save message with attachment indicator (🔥 REMOVED has_attachments field)
-    const { error: msgError } = await supabase
-      .from('messages')
-      .insert({
-        conversation_id: conversationId,
-        body: message || '',
-        direction: 'outbound',
-        delivery_status: 'sent',
-        sender_phone: phone,
-        guid: `temp_attachment_${Date.now()}`,
-        is_read: true,
-        created_at: new Date().toISOString()
-      })
-
-    if (msgError) {
-      console.error('⚠️ Error creating attachment message:', msgError)
-    } else {
-      console.log('✅ Attachment message saved to database!')
-    }
-  } catch (error) {
-    console.error('❌ Database error (attachment was still sent):', error)
-  }
-}
-
-// Save reaction to database
-async function saveReactionToDatabase(memberId, chatGuid, phone, result, associatedMessageGuid, associatedMessageType) {
-  try {
-    const { createClient } = require('@supabase/supabase-js')
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-    )
-
-    // Find conversation
-    const { data: existingConv } = await supabase
-      .from('conversations')
-      .select('id')
-      .eq('member_id', memberId)
-      .maybeSingle()
-
-    if (!existingConv) {
-      console.warn('⚠️ Conversation not found for reaction')
-      return
-    }
-
-    // Create reaction record
-    const { error: msgError } = await supabase.from('messages').insert({
-      conversation_id: existingConv.id,
-      body: '',
-      direction: 'outbound',
-      delivery_status: 'sent',
-      sender_phone: phone,
-      guid: result.data?.guid || `temp_reaction_${Date.now()}`,
-      associated_message_guid: associatedMessageGuid,
-      associated_message_type: associatedMessageType,
-      is_read: false
-    })
-
-    if (msgError) {
-      console.error('⚠️ Error creating reaction record:', msgError)
-    } else {
-      console.log('✅ Reaction saved to database!')
-    }
-  } catch (error) {
-    console.error('❌ Database error (reaction was still sent):', error)
   }
 }
