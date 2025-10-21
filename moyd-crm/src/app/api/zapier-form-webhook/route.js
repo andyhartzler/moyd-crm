@@ -306,7 +306,6 @@ function estimateDistrictFromZip(zip) {
 
 export async function POST(request) {
   try {
-    // Create Supabase client inside the function
     const supabase = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL,
       process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -325,55 +324,64 @@ export async function POST(request) {
       }
     }
 
+    // Helper function to safely convert Yes/No to boolean (only for true boolean fields)
+    const toBoolean = (value) => {
+      if (!value || value === '') return null
+      if (value === 'Yes') return true
+      if (value === 'No') return false
+      return null // Default to null for any unexpected value
+    }
+
     // Get county and congressional district from address
     const locationInfo = await getLocationInfo(formData.address)
     
-    // Use form data if provided, otherwise use geocoded data
-    // Note: county names are stored WITHOUT "County" suffix
     const county = formData.county || locationInfo.county
     const congressional_district = formData.congressional_district || locationInfo.district
+
+    const memberData = {
+      name: formData.name,
+      email: formData.email,
+      phone: formData.phone,
+      phone_e164: phone_e164,
+      date_of_birth: formData.date_of_birth,
+      preferred_pronouns: formData.preferred_pronouns,
+      gender_identity: formData.gender_identity, // Text: stores "Prefer not to say"
+      address: formData.address,
+      county: county,
+      congressional_district: congressional_district,
+      race: formData.race, // Text: stores "Prefer not to say"
+      sexual_orientation: formData.sexual_orientation, // Text: stores "Prefer not to say"
+      desire_to_lead: toBoolean(formData.desire_to_lead), // Boolean: Yes/No only
+      hours_per_week: formData.hours_per_week,
+      education_level: formData.education_level,
+      registered_voter: toBoolean(formData.registered_voter), // Boolean: Yes/No only
+      in_school: formData.in_school, // Text: stores "Yes", "No", or "Prefer not to say"
+      school_name: formData.school_name,
+      employed: formData.employed, // Text: stores "Yes", "No", or "Prefer not to say"
+      industry: formData.industry,
+      hispanic_latino: formData.hispanic_latino,
+      accommodations: formData.accommodations,
+      community_type: formData.community_type,
+      languages: formData.languages,
+      why_join: formData.why_join,
+      committee: formData.committee,
+      notes: formData.notes,
+      created_at: new Date().toISOString(),
+    }
 
     // Upsert member
     const { data, error } = await supabase
       .from('members')
-      .upsert({
-        name: formData.name,
-        email: formData.email,
-        phone: formData.phone,
-        phone_e164: phone_e164,
-        date_of_birth: formData.date_of_birth,
-        preferred_pronouns: formData.preferred_pronouns,
-        gender_identity: formData.gender_identity,
-        address: formData.address,
-        county: county,
-        congressional_district: congressional_district,
-        race: formData.race,
-        sexual_orientation: formData.sexual_orientation,
-        desire_to_lead: formData.desire_to_lead === 'Yes',
-        hours_per_week: formData.hours_per_week,
-        education_level: formData.education_level,
-        registered_voter: formData.registered_voter === 'Yes',
-        in_school: formData.in_school === 'Yes',
-        school_name: formData.school_name,
-        employed: formData.employed === 'Yes',
-        industry: formData.industry,
-        hispanic_latino: formData.hispanic_latino,
-        accommodations: formData.accommodations,
-        community_type: formData.community_type,
-        languages: formData.languages,
-        why_join: formData.why_join,
-        committee: formData.committee,
-        notes: formData.notes,
-        created_at: new Date().toISOString(),
-      }, {
+      .upsert(memberData, {
         onConflict: 'email'
       })
+      .select()
 
     if (error) throw error
 
     return NextResponse.json({ 
       success: true, 
-      data,
+      data: data,
       geocoded: {
         county: locationInfo.county,
         district: locationInfo.district
@@ -381,6 +389,9 @@ export async function POST(request) {
     })
   } catch (error) {
     console.error('Webhook error:', error)
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json({ 
+      success: false,
+      error: error.message 
+    }, { status: 500 })
   }
 }
