@@ -1,12 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-)
-
-// Add this GET handler for browser visits
+// Add GET handler for browser visits
 export async function GET() {
   return NextResponse.json({ 
     message: 'Zapier webhook endpoint is working! Use POST to submit data.',
@@ -16,6 +11,12 @@ export async function GET() {
 
 export async function POST(request) {
   try {
+    // Create Supabase client inside the function
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_ROLE_KEY
+    )
+
     const formData = await request.json()
     
     // Format phone to E.164
