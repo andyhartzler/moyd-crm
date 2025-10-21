@@ -129,6 +129,28 @@ const MISSOURI_COUNTIES = {
   'Wright County': { district: 'CD-8', cities: ['hartville', 'mansfield', 'mountain grove', 'ava', 'cabool', 'gracemont', 'macomb', 'manes', 'solo', 'vanzant'] }
 }
 
+// Function to get district from county name
+function getDistrictFromCounty(countyName) {
+  if (!countyName) return null
+  
+  // Try exact match first (with "County" suffix)
+  const withCounty = `${countyName} County`
+  if (MISSOURI_COUNTIES[withCounty]) {
+    return MISSOURI_COUNTIES[withCounty].district
+  }
+  
+  // Try searching through all counties (case-insensitive)
+  const normalizedCounty = countyName.toLowerCase().trim()
+  for (const [key, value] of Object.entries(MISSOURI_COUNTIES)) {
+    const countyBaseName = key.replace(/ County$/i, '').toLowerCase()
+    if (countyBaseName === normalizedCounty) {
+      return value.district
+    }
+  }
+  
+  return null
+}
+
 // Expand common Missouri city abbreviations
 function expandMissouriCity(address) {
   if (!address) return address
@@ -335,8 +357,14 @@ export async function POST(request) {
     // Get county and congressional district from address
     const locationInfo = await getLocationInfo(formData.address)
     
-    const county = formData.county || locationInfo.county
-    const congressional_district = formData.congressional_district || locationInfo.district
+    // Use form data if provided, otherwise use geocoded data
+    let county = formData.county || locationInfo.county
+    let congressional_district = formData.congressional_district || locationInfo.district
+
+    // If we have a county but no district, look it up from our county data
+    if (county && !congressional_district) {
+      congressional_district = getDistrictFromCounty(county)
+    }
 
     const memberData = {
       name: formData.name,
