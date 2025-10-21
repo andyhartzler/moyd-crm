@@ -80,13 +80,13 @@ async function handleOutboundMessageUpdate(message) {
         // Strategy 1: Match attachment-only messages (empty or \ufffc body)
         if (hasAttachments && !hasText) {
           console.log('🔍 Looking for temp attachment message (empty/attachment body)...')
-          
+
           // Find temp messages with empty body or attachment character
-          existingMessage = recentMessages.find(m => 
+          existingMessage = recentMessages.find(m =>
             (!m.body || m.body.trim() === '' || m.body === '\ufffc') &&
-            (m.guid.includes('temp-intro-vcard') || m.guid.includes('temp_attachment'))
+            (m.guid.includes('temp-intro-vcard') || m.guid.includes('temp-vcard') || m.guid.includes('temp_attachment'))
           )
-          
+
           if (existingMessage) {
             console.log('✅ Matched ATTACHMENT message by empty/\ufffc body pattern')
           }
@@ -112,8 +112,9 @@ async function handleOutboundMessageUpdate(message) {
           
           if (hasAttachments && !hasText) {
             // Look for vcard temp messages
-            existingMessage = recentMessages.find(m => 
-              m.guid.includes('temp-intro-vcard') || 
+            existingMessage = recentMessages.find(m =>
+              m.guid.includes('temp-intro-vcard') ||
+              m.guid.includes('temp-vcard') ||
               (m.guid.includes('temp') && (!m.body || m.body.trim() === '' || m.body === '\ufffc'))
             )
             if (existingMessage) {
