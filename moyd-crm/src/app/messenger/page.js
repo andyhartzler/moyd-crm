@@ -541,8 +541,8 @@ function MessengerContent() {
         body: JSON.stringify({
           phone,
           memberId,
-          reactionType: reactionType.type,
-          reactionToMessageGuid: messageGuid,
+          reaction: reactionType.code,
+          replyToGuid: messageGuid,
         }),
       })
 
@@ -566,24 +566,24 @@ function MessengerContent() {
 
   const getStatusIcon = (msg) => {
     if (msg.direction !== 'outbound') return null
-    
+
     // Better status icons
-    if (msg.delivery_status === 'sending' || msg.delivery_status === 'sent') {
+    if (msg.delivery_status === 'queued' || msg.delivery_status === 'sent') {
       return <Clock className="h-3 w-3 text-blue-300 ml-1 animate-pulse" />
     }
-    
+
     if (msg.delivery_status === 'delivered' && msg.is_read) {
       return <span className="text-blue-300 ml-1">✓✓</span>
     }
-    
+
     if (msg.delivery_status === 'delivered') {
       return <span className="text-blue-300 ml-1">✓</span>
     }
-    
-    if (msg.delivery_status === 'failed') {
+
+    if (msg.delivery_status === 'error') {
       return <AlertCircle className="h-3 w-3 text-red-300 ml-1" />
     }
-    
+
     return null
   }
 
@@ -920,7 +920,7 @@ function MessengerContent() {
                 key={msg.guid || msg.id || idx}
                 className={`flex group ${isOutbound ? 'justify-end' : 'justify-start'}`}
               >
-                <div className={`max-w-xs lg:max-w-md ${isOutbound ? 'bg-blue-600 text-white' : 'bg-white text-gray-900'} rounded-2xl px-4 py-2 shadow-sm`}>
+                <div className={`relative max-w-xs lg:max-w-md ${isOutbound ? 'bg-blue-600 text-white' : 'bg-white text-gray-900'} rounded-2xl px-4 py-2 shadow-sm`}>
                   {showReplyInfo && (
                     <div className="text-xs opacity-70 mb-1 pb-1 border-b border-current/20">
                       Replying to: {messages.find(m => m.guid === msg.thread_originator_guid)?.body?.substring(0, 30)}...
