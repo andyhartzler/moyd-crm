@@ -46,13 +46,14 @@ export async function POST(request) {
       console.error('⚠️ Could not load logo:', err.message)
     }
 
-    // Generate vCard
+    // Generate vCard with proper line folding
     const vCardContent = generateVCard(CONTACT_INFO, logoBase64)
     const vCardBlob = new Blob([vCardContent], { type: 'text/vcard' })
     
     console.log('📎 vCard generated:', {
       size: vCardBlob.size,
-      preview: vCardContent.substring(0, 50) + '...'
+      hasPhoto: !!logoBase64,
+      preview: vCardContent.substring(0, 100) + '...'
     })
 
     const results = []
@@ -120,8 +121,8 @@ export async function POST(request) {
         introSendId = introSend.id
         console.log(`✅ Created intro_send record: ${introSendId}`)
 
-        // 🔥 CRITICAL FIX: Send message FIRST, get real GUID, THEN save to database
-        console.log('📨 Step 1: Sending text message to BlueBubbles...')
+        // Step 1: Send text message to BlueBubbles
+        console.log('📨 Step 1: Sending text message...')
         
         const textResponse = await fetch(
           `${BB_HOST}/api/v1/message/text?password=${BB_PASSWORD}`,
@@ -141,38 +142,30 @@ export async function POST(request) {
         }
 
         const textResult = await textResponse.json()
-        
-        // 🔥 CRITICAL: Extract the REAL GUID from BlueBubbles response
         const realTextGuid = textResult.data?.guid
         
-        console.log('📨 Text sent! Real GUID:', realTextGuid)
+        console.log('📨 Text sent! GUID:', realTextGuid)
 
         if (textResult.status !== 200 && textResult.message !== 'Message sent!') {
           throw new Error(textResult.error?.message || 'Failed to send text message')
         }
 
-        console.log('✅ Text message sent successfully')
-
-        // 🔥 CRITICAL FIX: Save text message with REAL GUID from BlueBubbles
+        // Save text message to database
         if (realTextGuid) {
-          const { error: textMsgError } = await supabase
+          await supabase
             .from('messages')
             .insert({
               conversation_id: conversationId,
               body: introMessage,
               direction: 'outbound',
-              delivery_status: 'sent', // Will be updated to 'delivered' by webhook
+              delivery_status: 'sent',
               sender_phone: recipient.phone,
-              guid: realTextGuid, // 🔥 USE REAL GUID!
+              guid: realTextGuid,
               is_read: true,
               created_at: new Date().toISOString()
             })
-
-          if (textMsgError) {
-            console.error('⚠️ Error saving text message:', textMsgError)
-          } else {
-            console.log('✅ Text message saved with REAL GUID:', realTextGuid)
-          }
+          
+          console.log('✅ Text message saved to database')
         }
 
         // Small delay between text and attachment
@@ -198,7 +191,7 @@ export async function POST(request) {
         // Set timeout for vCard (30 seconds)
         const controller = new AbortController()
         const timeoutId = setTimeout(() => {
-          console.log('⏱️ BlueBubbles timeout (30s) - attachment is queued and will send in background')
+          console.log('⏱️ BlueBubbles timeout (30s) - attachment queued')
           controller.abort()
         }, 30000)
 
@@ -220,44 +213,38 @@ export async function POST(request) {
           
           try {
             attachmentResult = JSON.parse(responseText)
-            
-            // 🔥 CRITICAL: Extract real GUID from attachment response
             const realVCardGuid = attachmentResult.data?.guid
             
-            console.log('📎 vCard sent! Real GUID:', realVCardGuid)
+            console.log('📎 vCard sent! GUID:', realVCardGuid)
 
             // Save vCard message with REAL GUID
             if (realVCardGuid) {
-              const { error: vCardError } = await supabase
+              await supabase
                 .from('messages')
                 .insert({
                   conversation_id: conversationId,
-                  body: '\ufffc', // Unicode object replacement character
+                  body: '\ufffc', // Unicode object replacement character for attachments
                   direction: 'outbound',
-                  delivery_status: 'sent', // Will be updated by webhook
+                  delivery_status: 'sent',
                   sender_phone: recipient.phone,
-                  guid: realVCardGuid, // 🔥 USE REAL GUID!
+                  guid: realVCardGuid,
                   is_read: true,
                   is_contact_card: true,
                   created_at: new Date().toISOString()
                 })
 
-              if (vCardError) {
-                console.error('⚠️ Error saving vCard message:', vCardError)
-              } else {
-                console.log('✅ vCard message saved with REAL GUID:', realVCardGuid)
-              }
+              console.log('✅ vCard message saved to database with GUID:', realVCardGuid)
             }
 
           } catch (e) {
             console.log('⚠️ Attachment response not JSON:', responseText.substring(0, 200))
             
-            // If we get a 524 or timeout, the message is likely queued
+            // If we get a timeout/error, the message is likely queued
             if (responseText.includes('524') || !attachmentResponse.ok) {
-              console.log('⚠️ Got error but message likely queued - webhook will update status')
+              console.log('⚠️ Message queued - webhook will update when it sends')
               
-              // Save with a temp GUID for now, webhook will update it
-              const tempVCardGuid = `temp-vcard-${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+              // Save with temp GUID, webhook will update it
+              const tempVCardGuid = `temp-vcard-${Date.now()}`
               
               await supabase
                 .from('messages')
@@ -265,7 +252,7 @@ export async function POST(request) {
                   conversation_id: conversationId,
                   body: '\ufffc',
                   direction: 'outbound',
-                  delivery_status: 'sending', // Webhook will update
+                  delivery_status: 'sending',
                   sender_phone: recipient.phone,
                   guid: tempVCardGuid,
                   is_read: true,
@@ -273,7 +260,7 @@ export async function POST(request) {
                   created_at: new Date().toISOString()
                 })
               
-              console.log('✅ vCard message saved with temp GUID, waiting for webhook')
+              console.log('✅ vCard saved with temp GUID, waiting for webhook')
             }
           }
 
@@ -281,10 +268,10 @@ export async function POST(request) {
           clearTimeout(timeoutId)
           
           if (fetchError.name === 'AbortError') {
-            console.log('⏱️ Timeout aborted - BlueBubbles is processing in background')
+            console.log('⏱️ Timeout - BlueBubbles processing in background')
             
-            // Save with temp GUID, webhook will update when it sends
-            const tempVCardGuid = `temp-vcard-${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+            // Save with temp GUID
+            const tempVCardGuid = `temp-vcard-${Date.now()}`
             
             await supabase
               .from('messages')
@@ -362,6 +349,7 @@ export async function POST(request) {
   }
 }
 
+// 🔥 FIXED: Proper vCard generation with line folding for photo
 function generateVCard(contact, logoBase64) {
   const lines = [
     'BEGIN:VCARD',
@@ -382,29 +370,63 @@ function generateVCard(contact, logoBase64) {
     lines.push(`URL:${contact.website}`)
   }
 
-  // 🔥 CORRECT ADDRESS FORMAT with PO Box
+  // Address with PO Box
   if (contact.address) {
     const { street, poBox, city, state, zip, country } = contact.address
-    // Format: ADR;TYPE=WORK:;;street;city;state;zip;country
-    // For PO Box: ADR;TYPE=WORK:;PO Box;city;state;zip;country
     lines.push(`ADR;TYPE=WORK:;;${poBox};${city};${state};${zip};${country}`)
-    
-    console.log('📝 vCard generated with CORRECT address:', {
-      lines: lines.length,
-      hasPhoto: !!logoBase64,
-      contentLength: lines.join('\r\n').length + (logoBase64 ? logoBase64.length : 0),
-      phone: contact.phone,
-      poBox: poBox,
-      zip: zip
-    })
   }
 
-  // Add photo if available
+  // 🔥 CRITICAL FIX: Properly fold the PHOTO line according to vCard 3.0 spec
+  // Lines must be wrapped at 75 characters with continuation lines starting with a space
   if (logoBase64) {
-    lines.push('PHOTO;ENCODING=b;TYPE=PNG:' + logoBase64)
+    const photoPrefix = 'PHOTO;ENCODING=b;TYPE=PNG:'
+    const fullPhotoLine = photoPrefix + logoBase64
+    
+    // Fold the line: first line can be 75 chars, continuation lines should start with space
+    const maxLineLength = 75
+    const foldedLines = []
+    
+    let currentLine = photoPrefix
+    let remainingData = logoBase64
+    
+    // First chunk: fill to 75 characters
+    const firstChunkLength = maxLineLength - photoPrefix.length
+    if (remainingData.length > firstChunkLength) {
+      currentLine += remainingData.substring(0, firstChunkLength)
+      foldedLines.push(currentLine)
+      remainingData = remainingData.substring(firstChunkLength)
+      
+      // Subsequent chunks: 74 characters (1 space + 74 data chars = 75 total)
+      while (remainingData.length > 0) {
+        const chunkLength = Math.min(74, remainingData.length)
+        foldedLines.push(' ' + remainingData.substring(0, chunkLength))
+        remainingData = remainingData.substring(chunkLength)
+      }
+    } else {
+      // Photo data is short enough to fit on one line
+      foldedLines.push(currentLine + remainingData)
+    }
+    
+    // Add all folded lines to the vCard
+    lines.push(...foldedLines)
+    
+    console.log('📸 Photo added with proper line folding:', {
+      photoDataLength: logoBase64.length,
+      totalPhotoLines: foldedLines.length,
+      firstLineLength: foldedLines[0].length,
+      lastLineLength: foldedLines[foldedLines.length - 1].length
+    })
   }
 
   lines.push('END:VCARD')
 
-  return lines.join('\r\n')
+  const vCardContent = lines.join('\r\n')
+  
+  console.log('📝 vCard generated:', {
+    totalLines: lines.length,
+    hasPhoto: !!logoBase64,
+    contentLength: vCardContent.length
+  })
+
+  return vCardContent
 }
