@@ -32,18 +32,29 @@ export async function POST(request) {
     
     console.log('📧 Sending intro to', recipients.length, 'recipient(s)')
 
-    // Load logo once for all recipients
+    // 🔥 FIX: Use correct filename - moyd-logo.png
     let logoBase64 = null
     try {
-      const logoPath = join(process.cwd(), 'public', 'logo.png')
+      const logoPath = join(process.cwd(), 'public', 'moyd-logo.png')
+      console.log('📂 Loading logo from:', logoPath)
+      
       const logoBuffer = readFileSync(logoPath)
       logoBase64 = logoBuffer.toString('base64')
+      
       console.log('✅ Logo loaded successfully:', {
         size: logoBuffer.length,
-        base64Length: logoBase64.length
+        base64Length: logoBase64.length,
+        firstChars: logoBase64.substring(0, 50) + '...',
+        path: logoPath
       })
     } catch (err) {
-      console.error('⚠️ Could not load logo:', err.message)
+      console.error('❌ FAILED to load logo:', err.message)
+      console.error('❌ Logo error details:', {
+        error: err,
+        cwd: process.cwd(),
+        attemptedPath: join(process.cwd(), 'public', 'moyd-logo.png')
+      })
+      // Continue without logo - will still send contact card
     }
 
     // Generate vCard with proper line folding
@@ -53,7 +64,8 @@ export async function POST(request) {
     console.log('📎 vCard generated:', {
       size: vCardBlob.size,
       hasPhoto: !!logoBase64,
-      preview: vCardContent.substring(0, 100) + '...'
+      contentLength: vCardContent.length,
+      firstLines: vCardContent.split('\r\n').slice(0, 10).join('\r\n')
     })
 
     const results = []
@@ -80,6 +92,7 @@ export async function POST(request) {
 
         if (existingConv) {
           conversationId = existingConv.id
+          console.log('📝 Updating existing conversation:', conversationId)
           await supabase
             .from('conversations')
             .update({ 
@@ -89,6 +102,7 @@ export async function POST(request) {
             })
             .eq('id', conversationId)
         } else {
+          console.log('📝 Creating new conversation')
           const { data: newConv } = await supabase
             .from('conversations')
             .insert({
@@ -100,6 +114,7 @@ export async function POST(request) {
             .single()
           
           conversationId = newConv.id
+          console.log('✅ Created conversation:', conversationId)
         }
 
         // Create intro_send record
@@ -114,15 +129,15 @@ export async function POST(request) {
           .single()
         
         if (introSendError) {
-          console.error('Error creating intro_send record:', introSendError)
+          console.error('❌ Error creating intro_send record:', introSendError)
           throw new Error('Failed to create send record')
         }
 
         introSendId = introSend.id
         console.log(`✅ Created intro_send record: ${introSendId}`)
 
-        // Step 1: Send text message to BlueBubbles
-        console.log('📨 Step 1: Sending text message...')
+        // Step 1: Send text message
+        console.log('📨 Step 1: Sending text message to BlueBubbles...')
         
         const textResponse = await fetch(
           `${BB_HOST}/api/v1/message/text?password=${BB_PASSWORD}`,
@@ -138,13 +153,18 @@ export async function POST(request) {
         )
 
         if (!textResponse.ok) {
+          console.error('❌ Text response not OK:', textResponse.status)
           throw new Error(`Failed to send text: ${textResponse.status}`)
         }
 
         const textResult = await textResponse.json()
         const realTextGuid = textResult.data?.guid
         
-        console.log('📨 Text sent! GUID:', realTextGuid)
+        console.log('📨 Text response:', {
+          status: textResult.status,
+          message: textResult.message,
+          guid: realTextGuid
+        })
 
         if (textResult.status !== 200 && textResult.message !== 'Message sent!') {
           throw new Error(textResult.error?.message || 'Failed to send text message')
@@ -152,7 +172,7 @@ export async function POST(request) {
 
         // Save text message to database
         if (realTextGuid) {
-          await supabase
+          const { error: textDbError } = await supabase
             .from('messages')
             .insert({
               conversation_id: conversationId,
@@ -165,7 +185,11 @@ export async function POST(request) {
               created_at: new Date().toISOString()
             })
           
-          console.log('✅ Text message saved to database')
+          if (textDbError) {
+            console.error('⚠️ Error saving text to database:', textDbError)
+          } else {
+            console.log('✅ Text message saved to database')
+          }
         }
 
         // Small delay between text and attachment
@@ -173,6 +197,7 @@ export async function POST(request) {
 
         // Step 2: Send vCard attachment
         console.log('📎 Step 2: Sending vCard attachment...')
+        console.log('📎 vCard preview (first 500 chars):', vCardContent.substring(0, 500))
         
         const fileBuffer = await vCardBlob.arrayBuffer()
         const vCardFile = new File([fileBuffer], 'Missouri Young Democrats.vcf', { 
@@ -186,7 +211,12 @@ export async function POST(request) {
         attachmentFormData.append('attachment', vCardFile)
         attachmentFormData.append('method', 'private-api')
 
-        console.log('📎 Submitting vCard to BlueBubbles...')
+        console.log('📎 Submitting vCard to BlueBubbles:', {
+          chatGuid,
+          fileName: 'Missouri Young Democrats.vcf',
+          fileSize: vCardFile.size,
+          hasPhoto: !!logoBase64
+        })
 
         // Set timeout for vCard (30 seconds)
         const controller = new AbortController()
@@ -207,6 +237,8 @@ export async function POST(request) {
 
           clearTimeout(timeoutId)
 
+          console.log('📎 Attachment response status:', attachmentResponse.status)
+
           // Try to parse response
           let attachmentResult
           const responseText = await attachmentResponse.text()
@@ -215,11 +247,15 @@ export async function POST(request) {
             attachmentResult = JSON.parse(responseText)
             const realVCardGuid = attachmentResult.data?.guid
             
-            console.log('📎 vCard sent! GUID:', realVCardGuid)
+            console.log('📎 vCard sent successfully:', {
+              status: attachmentResult.status,
+              guid: realVCardGuid,
+              message: attachmentResult.message
+            })
 
             // Save vCard message with REAL GUID
             if (realVCardGuid) {
-              await supabase
+              const { error: vCardDbError } = await supabase
                 .from('messages')
                 .insert({
                   conversation_id: conversationId,
@@ -233,7 +269,11 @@ export async function POST(request) {
                   created_at: new Date().toISOString()
                 })
 
-              console.log('✅ vCard message saved to database with GUID:', realVCardGuid)
+              if (vCardDbError) {
+                console.error('⚠️ Error saving vCard to database:', vCardDbError)
+              } else {
+                console.log('✅ vCard message saved to database with GUID:', realVCardGuid)
+              }
             }
 
           } catch (e) {
@@ -246,7 +286,7 @@ export async function POST(request) {
               // Save with temp GUID, webhook will update it
               const tempVCardGuid = `temp-vcard-${Date.now()}`
               
-              await supabase
+              const { error: vCardDbError } = await supabase
                 .from('messages')
                 .insert({
                   conversation_id: conversationId,
@@ -260,7 +300,11 @@ export async function POST(request) {
                   created_at: new Date().toISOString()
                 })
               
-              console.log('✅ vCard saved with temp GUID, waiting for webhook')
+              if (vCardDbError) {
+                console.error('⚠️ Error saving temp vCard:', vCardDbError)
+              } else {
+                console.log('✅ vCard saved with temp GUID, waiting for webhook')
+              }
             }
           }
 
@@ -273,7 +317,7 @@ export async function POST(request) {
             // Save with temp GUID
             const tempVCardGuid = `temp-vcard-${Date.now()}`
             
-            await supabase
+            const { error: vCardDbError } = await supabase
               .from('messages')
               .insert({
                 conversation_id: conversationId,
@@ -287,8 +331,13 @@ export async function POST(request) {
                 created_at: new Date().toISOString()
               })
             
-            console.log('✅ vCard queued, saved with temp GUID')
+            if (vCardDbError) {
+              console.error('⚠️ Error saving timeout vCard:', vCardDbError)
+            } else {
+              console.log('✅ vCard queued, saved with temp GUID')
+            }
           } else {
+            console.error('❌ Fetch error:', fetchError)
             throw fetchError
           }
         }
@@ -301,6 +350,8 @@ export async function POST(request) {
             sent_at: new Date().toISOString()
           })
           .eq('id', introSendId)
+
+        console.log('✅ Intro send complete for', recipient.name)
 
         successCount++
         results.push({
@@ -333,6 +384,12 @@ export async function POST(request) {
       }
     }
 
+    console.log('📊 Send intro summary:', {
+      totalSent: successCount,
+      totalFailed: recipients.length - successCount,
+      results
+    })
+
     return NextResponse.json({
       success: successCount > 0,
       totalSent: successCount,
@@ -349,8 +406,13 @@ export async function POST(request) {
   }
 }
 
-// 🔥 FIXED: Proper vCard generation with line folding for photo
+// 🔥 COMPLETE FIXED VCARD GENERATION WITH LINE FOLDING
 function generateVCard(contact, logoBase64) {
+  console.log('🔧 Generating vCard...', {
+    hasLogo: !!logoBase64,
+    logoLength: logoBase64?.length || 0
+  })
+
   const lines = [
     'BEGIN:VCARD',
     'VERSION:3.0',
@@ -377,55 +439,64 @@ function generateVCard(contact, logoBase64) {
   }
 
   // 🔥 CRITICAL FIX: Properly fold the PHOTO line according to vCard 3.0 spec
-  // Lines must be wrapped at 75 characters with continuation lines starting with a space
+  // The vCard 3.0 spec (RFC 2426) requires lines to be wrapped at 75 characters
+  // Continuation lines must start with a space
   if (logoBase64) {
-    const photoPrefix = 'PHOTO;ENCODING=b;TYPE=PNG:'
-    const fullPhotoLine = photoPrefix + logoBase64
+    console.log('📸 Adding photo to vCard with line folding...')
     
-    // Fold the line: first line can be 75 chars, continuation lines should start with space
+    const photoPrefix = 'PHOTO;ENCODING=b;TYPE=PNG:'
     const maxLineLength = 75
     const foldedLines = []
     
-    let currentLine = photoPrefix
     let remainingData = logoBase64
     
-    // First chunk: fill to 75 characters
+    // First line: can be up to 75 characters total (including prefix)
     const firstChunkLength = maxLineLength - photoPrefix.length
     if (remainingData.length > firstChunkLength) {
-      currentLine += remainingData.substring(0, firstChunkLength)
-      foldedLines.push(currentLine)
+      // Photo data is longer than one line - need to fold
+      const firstChunk = remainingData.substring(0, firstChunkLength)
+      foldedLines.push(photoPrefix + firstChunk)
       remainingData = remainingData.substring(firstChunkLength)
       
-      // Subsequent chunks: 74 characters (1 space + 74 data chars = 75 total)
+      // Subsequent lines: space + 74 characters (total 75)
       while (remainingData.length > 0) {
         const chunkLength = Math.min(74, remainingData.length)
-        foldedLines.push(' ' + remainingData.substring(0, chunkLength))
+        const chunk = remainingData.substring(0, chunkLength)
+        foldedLines.push(' ' + chunk) // CRITICAL: Space at beginning for continuation
         remainingData = remainingData.substring(chunkLength)
       }
+      
+      console.log('📸 Photo folded into', foldedLines.length, 'lines')
     } else {
-      // Photo data is short enough to fit on one line
-      foldedLines.push(currentLine + remainingData)
+      // Photo data fits on one line
+      foldedLines.push(photoPrefix + remainingData)
+      console.log('📸 Photo fits on one line')
     }
     
     // Add all folded lines to the vCard
     lines.push(...foldedLines)
     
-    console.log('📸 Photo added with proper line folding:', {
+    console.log('📸 Photo added:', {
       photoDataLength: logoBase64.length,
       totalPhotoLines: foldedLines.length,
       firstLineLength: foldedLines[0].length,
-      lastLineLength: foldedLines[foldedLines.length - 1].length
+      lastLineLength: foldedLines[foldedLines.length - 1].length,
+      sampleFirstLine: foldedLines[0].substring(0, 80) + '...',
+      sampleSecondLine: foldedLines.length > 1 ? foldedLines[1].substring(0, 80) + '...' : 'N/A'
     })
+  } else {
+    console.log('⚠️ No logo provided - vCard will not have photo')
   }
 
   lines.push('END:VCARD')
 
   const vCardContent = lines.join('\r\n')
   
-  console.log('📝 vCard generated:', {
+  console.log('📝 vCard generation complete:', {
     totalLines: lines.length,
     hasPhoto: !!logoBase64,
-    contentLength: vCardContent.length
+    contentLength: vCardContent.length,
+    linesWithPhoto: logoBase64 ? lines.filter(l => l.startsWith('PHOTO') || l.startsWith(' ')).length : 0
   })
 
   return vCardContent
