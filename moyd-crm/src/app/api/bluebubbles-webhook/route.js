@@ -83,19 +83,35 @@ async function handleOutboundMessageUpdate(message) {
       }
     }
 
-    console.log('Looking for member with phone:', normalizedPhone)
+    console.log('🔍 [OUTBOUND] Looking for member with phone:', normalizedPhone)
 
     // Find member
-    const { data: members } = await supabase
+    const { data: members, error: memberError } = await supabase
       .from('members')
-      .select('id')
+      .select('id, name, phone_e164')
       .eq('phone_e164', normalizedPhone)
       .maybeSingle()
 
-    if (!members) {
-      console.log('Member not found for outbound message:', normalizedPhone)
+    if (memberError) {
+      console.error('❌ [OUTBOUND] Error finding member:', memberError)
       return
     }
+
+    if (!members) {
+      console.log('⚠️ [OUTBOUND] Member not found for phone:', normalizedPhone)
+      console.log('💡 [OUTBOUND] Trying to find ANY member to debug...')
+
+      // Debug: show what members exist
+      const { data: allMembers } = await supabase
+        .from('members')
+        .select('id, name, phone_e164')
+        .limit(5)
+
+      console.log('📋 [OUTBOUND] Sample members in database:', allMembers)
+      return
+    }
+
+    console.log('✅ [OUTBOUND] Found member:', members.id, members.name)
 
     // Get message text for last_message field
     let messageBody = message.text || ''
@@ -106,19 +122,26 @@ async function handleOutboundMessageUpdate(message) {
     }
 
     // Find or create conversation
-    const { data: existingConv } = await supabase
+    console.log('🔍 [OUTBOUND] Looking for conversation with member_id:', members.id)
+
+    const { data: existingConv, error: convLookupError } = await supabase
       .from('conversations')
       .select('id')
       .eq('member_id', members.id)
       .maybeSingle()
 
+    if (convLookupError) {
+      console.error('❌ [OUTBOUND] Error looking up conversation:', convLookupError)
+      return
+    }
+
     let conversationId
     if (existingConv) {
-      console.log('Using existing conversation:', existingConv.id)
+      console.log('✅ [OUTBOUND] Using existing conversation:', existingConv.id)
       conversationId = existingConv.id
 
-      // Update conversation metadata (don't care about return value)
-      await supabase
+      // Update conversation metadata
+      const { error: updateError } = await supabase
         .from('conversations')
         .update({
           updated_at: new Date().toISOString(),
@@ -127,8 +150,12 @@ async function handleOutboundMessageUpdate(message) {
         })
         .eq('id', conversationId)
 
+      if (updateError) {
+        console.error('⚠️ [OUTBOUND] Error updating conversation:', updateError)
+      }
+
     } else {
-      console.log('Creating new conversation for member:', members.id)
+      console.log('🆕 [OUTBOUND] Creating new conversation for member:', members.id, members.name)
       const { data: newConv, error: convError } = await supabase
         .from('conversations')
         .insert({
@@ -139,12 +166,18 @@ async function handleOutboundMessageUpdate(message) {
         .select()
         .single()
 
-      if (convError || !newConv) {
-        console.error('Failed to create conversation:', convError)
+      if (convError) {
+        console.error('❌ [OUTBOUND] Failed to create conversation:', convError)
+        return
+      }
+
+      if (!newConv) {
+        console.error('❌ [OUTBOUND] Created conversation but got null')
         return
       }
 
       conversationId = newConv.id
+      console.log('✅ [OUTBOUND] Created conversation:', conversationId)
     }
 
     // Create the outbound message
@@ -176,14 +209,18 @@ async function handleOutboundMessageUpdate(message) {
       messageData.date_read = new Date(message.dateRead).toISOString()
     }
 
-    const { error } = await supabase
+    console.log('💾 [OUTBOUND] Creating message in conversation:', conversationId)
+
+    const { error: msgError } = await supabase
       .from('messages')
       .insert(messageData)
 
-    if (error) {
-      console.error('Error creating outbound message:', error)
+    if (msgError) {
+      console.error('❌ [OUTBOUND] Error creating message:', msgError)
+      console.error('❌ [OUTBOUND] Message data:', messageData)
     } else {
-      console.log('✅ Outbound message created successfully:', message.guid?.substring(0, 20))
+      console.log('✅ [OUTBOUND] Message created successfully!')
+      console.log('✅ [OUTBOUND] GUID:', message.guid?.substring(0, 20), 'ConvID:', conversationId)
     }
   } catch (error) {
     console.error('Error handling outbound message:', error)
@@ -427,21 +464,21 @@ async function handleNewMessage(message) {
       }
     }
 
-    console.log('Looking for member with phone:', normalizedPhone)
+    console.log('🔍 [INBOUND] Looking for member with phone:', normalizedPhone)
 
     // Find member
     const { data: members, error: memberError } = await supabase
       .from('members')
-      .select('id, name')
+      .select('id, name, phone_e164')
       .eq('phone_e164', normalizedPhone)
       .single()
 
     if (memberError || !members) {
-      console.log('Member not found:', normalizedPhone)
+      console.log('⚠️ [INBOUND] Member not found:', normalizedPhone)
       return
     }
 
-    console.log('Found member:', members.id)
+    console.log('✅ [INBOUND] Found member:', members.id, members.name)
 
     // Check for opt-out/opt-in keywords BEFORE saving message
     await checkOptOutOptIn(message, normalizedPhone, members.id)
@@ -455,19 +492,26 @@ async function handleNewMessage(message) {
     }
 
     // Find or create conversation
-    const { data: existingConv } = await supabase
+    console.log('🔍 [INBOUND] Looking for conversation with member_id:', members.id)
+
+    const { data: existingConv, error: convLookupError } = await supabase
       .from('conversations')
       .select('id')
       .eq('member_id', members.id)
       .maybeSingle()
 
+    if (convLookupError) {
+      console.error('❌ [INBOUND] Error looking up conversation:', convLookupError)
+      return
+    }
+
     let conversationId
     if (existingConv) {
-      console.log('Using existing conversation:', existingConv.id)
+      console.log('✅ [INBOUND] Using existing conversation:', existingConv.id)
       conversationId = existingConv.id
 
-      // Update conversation metadata (don't care about return value)
-      await supabase
+      // Update conversation metadata
+      const { error: updateError } = await supabase
         .from('conversations')
         .update({
           updated_at: new Date().toISOString(),
@@ -476,8 +520,12 @@ async function handleNewMessage(message) {
         })
         .eq('id', conversationId)
 
+      if (updateError) {
+        console.error('⚠️ [INBOUND] Error updating conversation:', updateError)
+      }
+
     } else {
-      console.log('Creating new conversation for member:', members.id)
+      console.log('🆕 [INBOUND] Creating new conversation for member:', members.id, members.name)
       const { data: newConv, error: convError } = await supabase
         .from('conversations')
         .insert({
@@ -488,13 +536,21 @@ async function handleNewMessage(message) {
         .select()
         .single()
 
-      if (convError || !newConv) {
-        console.error('Failed to create conversation:', convError)
+      if (convError) {
+        console.error('❌ [INBOUND] Failed to create conversation:', convError)
+        return
+      }
+
+      if (!newConv) {
+        console.error('❌ [INBOUND] Created conversation but got null')
         return
       }
 
       conversationId = newConv.id
+      console.log('✅ [INBOUND] Created conversation:', conversationId)
     }
+
+    console.log('💾 [INBOUND] Creating message in conversation:', conversationId)
 
     // Create the message
     const messageData = {
@@ -531,9 +587,11 @@ async function handleNewMessage(message) {
       .insert(messageData)
 
     if (msgError) {
-      console.error('Error creating message:', msgError)
+      console.error('❌ [INBOUND] Error creating message:', msgError)
+      console.error('❌ [INBOUND] Message data:', messageData)
     } else {
-      console.log('Message saved successfully:', message.guid?.substring(0, 20))
+      console.log('✅ [INBOUND] Message created successfully!')
+      console.log('✅ [INBOUND] GUID:', message.guid?.substring(0, 20), 'ConvID:', conversationId)
     }
   } catch (error) {
     console.error('Error handling new message:', error)
