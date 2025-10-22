@@ -40,7 +40,7 @@ export async function POST(request) {
 async function handleOutboundMessageUpdate(message) {
   try {
     console.log('📤 Processing outbound message update:', message.guid?.substring(0, 20))
-    const hasAttachments = message.hasAttachments && message.attachments?.length > 0
+    const hasAttachments = message.attachments && message.attachments.length > 0
     const hasText = message.text && message.text.trim().length > 0
 
     console.log('Message details:', {
@@ -521,9 +521,9 @@ async function handleNewMessage(message) {
 
     // Get message text for last_message field
     let messageBody = message.text || ''
-    
+
     // Handle attachment-only messages
-    if (message.hasAttachments && (!messageBody || messageBody.trim() === '')) {
+    if (message.attachments && message.attachments.length > 0 && (!messageBody || messageBody.trim() === '')) {
       messageBody = '\ufffc' // Unicode attachment character
     }
 
