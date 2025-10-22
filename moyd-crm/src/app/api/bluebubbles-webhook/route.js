@@ -231,32 +231,24 @@ async function handleIncomingReaction(message) {
       isFromMe: message.isFromMe
     })
 
+    // Skip outbound reactions - they're already saved in /api/send-message
+    if (message.isFromMe) {
+      console.log('⏭️ Skipping outbound reaction (already saved when sent)')
+      return
+    }
+
     // Get the phone number to find the member/conversation
-    // For outbound reactions (isFromMe: true), phone is from chat identifier
     // For inbound reactions, phone is from handle
     let phone = null
 
-    if (message.isFromMe) {
-      // Outbound reaction - get recipient's phone from chat identifier
-      if (message.chats && message.chats.length > 0 && message.chats[0]?.chatIdentifier) {
-        const chatId = message.chats[0].chatIdentifier
-        if (chatId.includes(';-;')) {
-          phone = chatId.split(';-;')[1]
-        } else {
-          phone = chatId
-        }
-      }
-    } else {
-      // Inbound reaction - get sender's phone from handle
-      if (message.handle?.address) {
-        phone = message.handle.address
-      } else if (message.chats && message.chats.length > 0 && message.chats[0]?.chatIdentifier) {
-        const chatId = message.chats[0].chatIdentifier
-        if (chatId.includes(';-;')) {
-          phone = chatId.split(';-;')[1]
-        } else {
-          phone = chatId
-        }
+    if (message.handle?.address) {
+      phone = message.handle.address
+    } else if (message.chats && message.chats.length > 0 && message.chats[0]?.chatIdentifier) {
+      const chatId = message.chats[0].chatIdentifier
+      if (chatId.includes(';-;')) {
+        phone = chatId.split(';-;')[1]
+      } else {
+        phone = chatId
       }
     }
 
