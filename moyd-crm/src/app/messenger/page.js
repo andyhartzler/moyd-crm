@@ -541,7 +541,7 @@ function MessengerContent() {
         body: JSON.stringify({
           phone,
           memberId,
-          reaction: reactionType.code,
+          reaction: reactionType.type,
           replyToGuid: messageGuid,
         }),
       })

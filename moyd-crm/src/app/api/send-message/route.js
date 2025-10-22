@@ -236,7 +236,7 @@ async function handleTextMessage(request) {
     // Handle reactions
     if (reaction) {
       console.log(`💙 Sending ${reaction} reaction...`)
-      
+
       if (!replyToGuid) {
         return NextResponse.json(
           { error: 'replyToGuid required for reactions' },
@@ -244,13 +244,21 @@ async function handleTextMessage(request) {
         )
       }
 
-      const reactionCode = parseInt(reaction)
-      if (isNaN(reactionCode)) {
+      // Validate reaction type string
+      const validReactions = ['love', 'like', 'dislike', 'laugh', 'emphasize', 'question', '-love', '-like', '-dislike', '-laugh', '-emphasize', '-question']
+      if (!validReactions.includes(reaction)) {
         return NextResponse.json(
-          { error: 'Invalid reaction code' },
+          { error: 'Invalid reaction type' },
           { status: 400 }
         )
       }
+
+      // Map reaction type to code for database storage
+      const reactionCodeMap = {
+        'love': 2000, 'like': 2001, 'dislike': 2002, 'laugh': 2003, 'emphasize': 2004, 'question': 2005,
+        '-love': 3000, '-like': 3001, '-dislike': 3002, '-laugh': 3003, '-emphasize': 3004, '-question': 3005
+      }
+      const reactionCode = reactionCodeMap[reaction]
 
       const messageGuid = replyToGuid
       const part = parseInt(partIndex) || 0
@@ -266,7 +274,7 @@ async function handleTextMessage(request) {
           body: JSON.stringify({
             chatGuid,
             selectedMessageGuid: messageGuid,
-            reaction: reactionCode,
+            reaction: reaction,
             partIndex: part
           }),
           signal: controller.signal
