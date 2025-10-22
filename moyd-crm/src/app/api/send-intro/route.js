@@ -82,12 +82,14 @@ export async function POST(request) {
 
         console.log(`📤 Sending intro to ${recipient.name} (${recipient.phone})`)
 
-        // Get or create conversation
+        // Get or create conversation (use most recent if multiple exist)
         let conversationId
         const { data: existingConv } = await supabase
           .from('conversations')
           .select('id')
           .eq('member_id', recipient.memberId)
+          .order('updated_at', { ascending: false })
+          .limit(1)
           .maybeSingle()
 
         if (existingConv) {

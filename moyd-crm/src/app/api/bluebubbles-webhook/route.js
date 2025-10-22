@@ -463,11 +463,13 @@ async function handleNewMessage(message) {
       messageBody = '\ufffc' // Unicode attachment character
     }
 
-    // Find or create conversation
+    // Find or create conversation (use most recent if multiple exist)
     const { data: existingConv } = await supabase
       .from('conversations')
       .select('id')
       .eq('member_id', members.id)
+      .order('updated_at', { ascending: false })
+      .limit(1)
       .maybeSingle()
 
     let conversation

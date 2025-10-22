@@ -18,12 +18,14 @@ export async function GET(request) {
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
     )
 
-    // Find the conversation for this member
+    // Find the conversation for this member (most recent if multiple exist)
     const { data: conversation, error: convError } = await supabase
       .from('conversations')
       .select('id')
       .eq('member_id', memberId)
-      .single()
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
 
     if (convError || !conversation) {
       return NextResponse.json({ messages: [] })

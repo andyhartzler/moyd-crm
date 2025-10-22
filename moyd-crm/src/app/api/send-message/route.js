@@ -383,11 +383,13 @@ async function saveMessageToDatabase(memberId, chatGuid, messageBody, phone, res
 
     console.log('💾 Saving message to database...')
 
-    // Find existing conversation or create one
+    // Find existing conversation or create one (use most recent if multiple exist)
     const { data: existingConv } = await supabase
       .from('conversations')
       .select('id')
       .eq('member_id', memberId)
+      .order('updated_at', { ascending: false })
+      .limit(1)
       .maybeSingle()
 
     let conversationId
@@ -458,11 +460,13 @@ async function saveAttachmentToDatabase(memberId, chatGuid, phone, fileName, mes
 
     console.log('💾 Saving attachment message to database...')
 
-    // Find existing conversation or create one
+    // Find existing conversation or create one (use most recent if multiple exist)
     const { data: existingConv } = await supabase
       .from('conversations')
       .select('id')
       .eq('member_id', memberId)
+      .order('updated_at', { ascending: false })
+      .limit(1)
       .maybeSingle()
 
     let conversationId
