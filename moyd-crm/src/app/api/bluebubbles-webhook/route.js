@@ -112,25 +112,24 @@ async function handleOutboundMessageUpdate(message) {
       .eq('member_id', members.id)
       .maybeSingle()
 
-    let conversation
+    let conversationId
     if (existingConv) {
-      console.log('Updating existing conversation')
-      const { data: updatedConv } = await supabase
+      console.log('Using existing conversation:', existingConv.id)
+      conversationId = existingConv.id
+
+      // Update conversation metadata (don't care about return value)
+      await supabase
         .from('conversations')
         .update({
           updated_at: new Date().toISOString(),
           last_message: messageBody,
           last_message_at: new Date(message.dateCreated).toISOString()
         })
-        .eq('id', existingConv.id)
-        .select()
-        .single()
-
-      conversation = updatedConv
+        .eq('id', conversationId)
 
     } else {
-      console.log('Creating new conversation')
-      const { data: newConv } = await supabase
+      console.log('Creating new conversation for member:', members.id)
+      const { data: newConv, error: convError } = await supabase
         .from('conversations')
         .insert({
           member_id: members.id,
@@ -140,17 +139,17 @@ async function handleOutboundMessageUpdate(message) {
         .select()
         .single()
 
-      conversation = newConv
-    }
+      if (convError || !newConv) {
+        console.error('Failed to create conversation:', convError)
+        return
+      }
 
-    if (!conversation) {
-      console.log('Failed to get/create conversation')
-      return
+      conversationId = newConv.id
     }
 
     // Create the outbound message
     const messageData = {
-      conversation_id: conversation.id,
+      conversation_id: conversationId,
       body: messageBody,
       direction: 'outbound',
       delivery_status: 'delivered',
@@ -462,25 +461,24 @@ async function handleNewMessage(message) {
       .eq('member_id', members.id)
       .maybeSingle()
 
-    let conversation
+    let conversationId
     if (existingConv) {
-      console.log('Updating existing conversation')
-      const { data: updatedConv } = await supabase
+      console.log('Using existing conversation:', existingConv.id)
+      conversationId = existingConv.id
+
+      // Update conversation metadata (don't care about return value)
+      await supabase
         .from('conversations')
-        .update({ 
+        .update({
           updated_at: new Date().toISOString(),
           last_message: messageBody,
           last_message_at: new Date(message.dateCreated).toISOString()
         })
-        .eq('id', existingConv.id)
-        .select()
-        .single()
-      
-      conversation = updatedConv
+        .eq('id', conversationId)
 
     } else {
-      console.log('Creating new conversation')
-      const { data: newConv } = await supabase
+      console.log('Creating new conversation for member:', members.id)
+      const { data: newConv, error: convError } = await supabase
         .from('conversations')
         .insert({
           member_id: members.id,
@@ -489,18 +487,18 @@ async function handleNewMessage(message) {
         })
         .select()
         .single()
-      
-      conversation = newConv
-    }
 
-    if (!conversation) {
-      console.log('Failed to get/create conversation')
-      return
+      if (convError || !newConv) {
+        console.error('Failed to create conversation:', convError)
+        return
+      }
+
+      conversationId = newConv.id
     }
 
     // Create the message
     const messageData = {
-      conversation_id: conversation.id,
+      conversation_id: conversationId,
       body: messageBody,
       direction: 'inbound',
       delivery_status: 'delivered',
