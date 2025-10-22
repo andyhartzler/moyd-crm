@@ -255,7 +255,7 @@ export async function POST(request) {
               message: attachmentResult.message
             })
 
-            // Save vCard message with REAL GUID - await to ensure it's in DB before webhook
+            // Save vCard message with REAL GUID - save as delivered since we don't get webhook for attachments
             if (realVCardGuid) {
               const { error: vCardDbError } = await supabase
                 .from('messages')
@@ -263,19 +263,19 @@ export async function POST(request) {
                   conversation_id: conversationId,
                   body: '\ufffc', // Unicode object replacement character for attachments
                   direction: 'outbound',
-                  delivery_status: 'sent',
+                  delivery_status: 'delivered',
                   sender_phone: recipient.phone,
                   guid: realVCardGuid,
                   is_read: true,
                   is_contact_card: true,
-                  created_at: new Date().toISOString()
+                  created_at: new Date().toISOString(),
+                  date_delivered: new Date().toISOString()
                 })
 
               if (vCardDbError) {
                 console.error('⚠️ Error saving vCard to database:', vCardDbError)
               } else {
                 console.log('✅ vCard message saved to database with GUID:', realVCardGuid)
-                console.log('   Waiting for webhook to update delivery status...')
               }
             }
 
@@ -295,12 +295,13 @@ export async function POST(request) {
                   conversation_id: conversationId,
                   body: '\ufffc',
                   direction: 'outbound',
-                  delivery_status: 'sent',
+                  delivery_status: 'delivered',
                   sender_phone: recipient.phone,
                   guid: tempVCardGuid,
                   is_read: true,
                   is_contact_card: true,
-                  created_at: new Date().toISOString()
+                  created_at: new Date().toISOString(),
+                  date_delivered: new Date().toISOString()
                 })
               
               if (vCardDbError) {
