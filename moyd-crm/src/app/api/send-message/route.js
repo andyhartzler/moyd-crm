@@ -535,17 +535,23 @@ async function saveReactionToDatabase(memberId, chatGuid, phone, result, associa
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
     )
 
-    // Find conversation
+    console.log('💾 Saving reaction to database for member:', memberId)
+
+    // Find conversation (use most recent if multiple exist)
     const { data: existingConv } = await supabase
       .from('conversations')
       .select('id')
       .eq('member_id', memberId)
+      .order('updated_at', { ascending: false })
+      .limit(1)
       .maybeSingle()
 
     if (!existingConv) {
-      console.warn('⚠️ Conversation not found for reaction')
+      console.warn('⚠️ Conversation not found for reaction, member:', memberId)
       return
     }
+
+    console.log('✅ Found conversation:', existingConv.id)
 
     // Create reaction record
     const { error: msgError } = await supabase.from('messages').insert({
