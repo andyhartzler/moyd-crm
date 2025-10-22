@@ -199,6 +199,29 @@ async function handleOutboundMessageUpdate(message) {
   }
 }
 
+// Helper function to convert reaction type string to numeric code
+function parseReactionType(reactionType) {
+  if (typeof reactionType === 'number') return reactionType
+
+  const reactionMap = {
+    'love': 2000,
+    'like': 2001,
+    'dislike': 2002,
+    'laugh': 2003,
+    'emphasize': 2004,
+    'question': 2005,
+    '-love': 3000,
+    '-like': 3001,
+    '-dislike': 3002,
+    '-laugh': 3003,
+    '-emphasize': 3004,
+    '-question': 3005
+  }
+
+  const lowerType = String(reactionType).toLowerCase()
+  return reactionMap[lowerType] || null
+}
+
 async function handleIncomingReaction(message) {
   try {
     console.log('🎭 Processing incoming reaction:', {
@@ -209,16 +232,31 @@ async function handleIncomingReaction(message) {
     })
 
     // Get the phone number to find the member/conversation
+    // For outbound reactions (isFromMe: true), phone is from chat identifier
+    // For inbound reactions, phone is from handle
     let phone = null
-    
-    if (message.handle?.address) {
-      phone = message.handle.address
-    } else if (message.chats && message.chats.length > 0 && message.chats[0]?.chatIdentifier) {
-      const chatId = message.chats[0].chatIdentifier
-      if (chatId.includes(';-;')) {
-        phone = chatId.split(';-;')[1]
-      } else {
-        phone = chatId
+
+    if (message.isFromMe) {
+      // Outbound reaction - get recipient's phone from chat identifier
+      if (message.chats && message.chats.length > 0 && message.chats[0]?.chatIdentifier) {
+        const chatId = message.chats[0].chatIdentifier
+        if (chatId.includes(';-;')) {
+          phone = chatId.split(';-;')[1]
+        } else {
+          phone = chatId
+        }
+      }
+    } else {
+      // Inbound reaction - get sender's phone from handle
+      if (message.handle?.address) {
+        phone = message.handle.address
+      } else if (message.chats && message.chats.length > 0 && message.chats[0]?.chatIdentifier) {
+        const chatId = message.chats[0].chatIdentifier
+        if (chatId.includes(';-;')) {
+          phone = chatId.split(';-;')[1]
+        } else {
+          phone = chatId
+        }
       }
     }
 
@@ -226,6 +264,8 @@ async function handleIncomingReaction(message) {
       console.log('Could not extract phone from reaction')
       return
     }
+
+    console.log('📞 Looking up member with phone:', phone)
 
     // Normalize phone
     let normalizedPhone = phone.replace(/[\s\-\(\)]/g, '')
@@ -245,9 +285,11 @@ async function handleIncomingReaction(message) {
       .maybeSingle()
 
     if (!members) {
-      console.log('Member not found for reaction')
+      console.log('⚠️ Member not found for reaction:', normalizedPhone)
       return
     }
+
+    console.log('✅ Found member:', members.id)
 
     // Find conversation (use most recent if multiple exist)
     const { data: conversation } = await supabase
@@ -259,15 +301,27 @@ async function handleIncomingReaction(message) {
       .maybeSingle()
 
     if (!conversation) {
-      console.log('⚠️ Conversation not found for reaction')
+      console.log('⚠️ Conversation not found for reaction, member:', members.id)
       return
     }
+
+    console.log('✅ Found conversation:', conversation.id)
 
     // Clean the associated GUID (remove part index like "p:0/" from "p:0/03E75927...")
     let cleanAssociatedGuid = message.associatedMessageGuid
     if (cleanAssociatedGuid?.includes('/')) {
       cleanAssociatedGuid = cleanAssociatedGuid.split('/')[1] // Get the part after the slash
     }
+
+    // Convert reaction type string to numeric code
+    const reactionCode = parseReactionType(message.associatedMessageType)
+
+    if (reactionCode === null) {
+      console.error('⚠️ Unknown reaction type:', message.associatedMessageType)
+      return
+    }
+
+    console.log('🔢 Reaction code:', reactionCode)
 
     const reactionData = {
       conversation_id: conversation.id,
@@ -277,24 +331,24 @@ async function handleIncomingReaction(message) {
       sender_phone: normalizedPhone,
       guid: message.guid,
       associated_message_guid: cleanAssociatedGuid,
-      associated_message_type: message.associatedMessageType,
+      associated_message_type: reactionCode,
       is_read: true,
       created_at: new Date(message.dateCreated).toISOString()
     }
 
-    console.log('💾 Saving reaction to database')
+    console.log('💾 Saving reaction to database:', reactionData)
 
     const { error } = await supabase
       .from('messages')
       .insert(reactionData)
 
     if (error) {
-      console.error('Error saving reaction:', error)
+      console.error('❌ Error saving reaction:', error)
     } else {
       console.log('✅ Reaction saved successfully')
     }
   } catch (error) {
-    console.error('Error handling incoming reaction:', error)
+    console.error('❌ Error handling incoming reaction:', error)
   }
 }
 
