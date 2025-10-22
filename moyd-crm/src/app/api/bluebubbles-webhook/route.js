@@ -175,17 +175,23 @@ async function handleOutboundMessageUpdate(message) {
 
     // Now update the message with delivery status
     if (existingMessage) {
+      console.log('📝 Updating message delivery status...')
+      console.log('   Current status:', existingMessage.delivery_status)
+      console.log('   Is contact card:', existingMessage.is_contact_card)
+
       const updateData = {
         delivery_status: 'delivered'
       }
 
       if (message.dateDelivered) {
         updateData.date_delivered = new Date(message.dateDelivered).toISOString()
+        console.log('   Setting date_delivered from webhook')
       }
 
       if (message.dateRead) {
         updateData.is_read = true
         updateData.date_read = new Date(message.dateRead).toISOString()
+        console.log('   Setting date_read from webhook')
       }
 
       const { error } = await supabase
@@ -194,9 +200,9 @@ async function handleOutboundMessageUpdate(message) {
         .eq('id', existingMessage.id)
 
       if (error) {
-        console.error('Error updating outbound message:', error)
+        console.error('❌ Error updating outbound message:', error)
       } else {
-        console.log('✅ Outbound message updated successfully')
+        console.log('✅ Outbound message updated successfully to delivered')
       }
     } else {
       console.log('⚠️ Could not find existing message to update')
