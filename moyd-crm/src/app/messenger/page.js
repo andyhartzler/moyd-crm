@@ -97,11 +97,13 @@ function MessengerContent() {
   // 🔥 NEW: Setup Supabase Realtime subscription for instant updates
   const setupRealtimeSubscription = async () => {
     try {
-      // Get conversation ID first
+      // Get conversation ID first (use most recent if multiple exist)
       const { data: conversation } = await supabase
         .from('conversations')
         .select('id')
         .eq('member_id', memberId)
+        .order('updated_at', { ascending: false })
+        .limit(1)
         .maybeSingle()
 
       if (!conversation) {
@@ -122,29 +124,19 @@ function MessengerContent() {
             table: 'messages',
             filter: `conversation_id=eq.${conversation.id}`
           },
-          (payload) => {
+          async (payload) => {
             console.log('📡 Realtime message update:', payload)
-            
+
             if (payload.eventType === 'INSERT') {
-              // New message inserted
-              const newMessage = payload.new
-              setMessages(prev => {
-                // Check if message already exists (avoid duplicates)
-                if (prev.some(m => m.id === newMessage.id || m.guid === newMessage.guid)) {
-                  return prev
-                }
-                return [...prev, newMessage]
-              })
+              // New message inserted - need to reload to get proper enrichment
+              await loadMessages()
               scrollToBottom()
             } else if (payload.eventType === 'UPDATE') {
               // Message updated (delivery status, read status, etc.)
-              const updatedMessage = payload.new
-              setMessages(prev => prev.map(m => 
-                m.id === updatedMessage.id ? updatedMessage : m
-              ))
+              await loadMessages()
             } else if (payload.eventType === 'DELETE') {
               // Message deleted
-              setMessages(prev => prev.filter(m => m.id !== payload.old.id))
+              await loadMessages()
             }
           }
         )
@@ -900,10 +892,11 @@ function MessengerContent() {
       </div>
 
       {/* Messages */}
-      <div 
+      <div
         ref={messagesContainerRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto p-6 space-y-4"
+        className="flex-1 overflow-y-auto p-6"
+        style={{ minHeight: 0 }}
       >
         {messages.length === 0 ? (
           <div className="text-center py-12">
@@ -913,79 +906,98 @@ function MessengerContent() {
         ) : (
           messages.map((msg, idx) => {
             const isOutbound = msg.direction === 'outbound'
-            const showReplyInfo = msg.thread_originator_guid && messages.find(m => m.guid === msg.thread_originator_guid)
+            const replyToMsg = msg.thread_originator_guid && messages.find(m => m.guid === msg.thread_originator_guid)
 
             return (
               <div
                 key={msg.guid || msg.id || idx}
-                className={`flex group ${isOutbound ? 'justify-end' : 'justify-start'}`}
+                className={`flex group ${isOutbound ? 'justify-end' : 'justify-start'} mb-2`}
               >
-                <div className={`relative max-w-xs lg:max-w-md ${isOutbound ? 'bg-blue-600 text-white' : 'bg-white text-gray-900'} rounded-2xl px-4 py-2 shadow-sm`}>
-                  {showReplyInfo && (
-                    <div className="text-xs opacity-70 mb-1 pb-1 border-b border-current/20">
-                      Replying to: {messages.find(m => m.guid === msg.thread_originator_guid)?.body?.substring(0, 30)}...
+                <div className={`relative ${isOutbound ? 'mr-2' : 'ml-2'}`} style={{ maxWidth: '70%' }}>
+                  {/* iMessage-style reply thread connector */}
+                  {replyToMsg && (
+                    <div className={`mb-2 ${isOutbound ? 'ml-4' : 'mr-4'}`}>
+                      <div className={`flex items-start gap-2 ${isOutbound ? 'flex-row-reverse' : 'flex-row'}`}>
+                        {/* Vertical line */}
+                        <div className={`w-0.5 h-full ${isOutbound ? 'bg-blue-400' : 'bg-gray-400'} relative`}>
+                          <div className={`absolute top-0 w-4 h-0.5 ${isOutbound ? 'bg-blue-400 -right-4' : 'bg-gray-400 -left-4'}`}></div>
+                        </div>
+                        {/* Original message preview */}
+                        <div className={`flex-1 ${isOutbound ? 'bg-blue-500/20 text-blue-900' : 'bg-gray-100 text-gray-700'} rounded-lg px-3 py-2 text-xs`}>
+                          <div className="font-medium mb-0.5">{isOutbound ? 'You' : name}</div>
+                          <div className="opacity-70 line-clamp-2">
+                            {replyToMsg.body === '\ufffc' ? 'Attachment' : replyToMsg.body}
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   )}
 
-                  <div>
-                    {msg.media_url || msg.body === '\ufffc' || msg.is_contact_card ? (
-                      <div className="space-y-1">
-                        {renderAttachment(msg)}
-                        {msg.body && msg.body !== '\ufffc' && (
-                          <p className="text-sm mt-2">{msg.body}</p>
-                        )}
+                  {/* Main message bubble */}
+                  <div className={`relative ${isOutbound ? 'bg-blue-600 text-white' : 'bg-white text-gray-900'} rounded-2xl px-4 py-2 shadow-sm`}>
+                    <div>
+                      {msg.media_url || msg.body === '\ufffc' || msg.is_contact_card ? (
+                        <div className="space-y-1">
+                          {renderAttachment(msg)}
+                          {msg.body && msg.body !== '\ufffc' && (
+                            <p className="text-sm mt-2">{msg.body}</p>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="text-sm break-words whitespace-pre-wrap">{msg.body}</p>
+                      )}
+                    </div>
+
+                    <div className={`flex items-center mt-0.5 px-1 ${isOutbound ? 'justify-end' : 'justify-start'}`}>
+                      <span className="text-xs opacity-70">
+                        {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                      {getStatusIcon(msg)}
+                    </div>
+
+                    {/* Reactions - positioned below message bubble */}
+                    {msg.reactions && msg.reactions.length > 0 && (
+                      <div className="flex gap-1 mt-1 flex-wrap">
+                        {msg.reactions.map((reaction, idx) => (
+                          <span key={idx} className={`text-sm ${isOutbound ? 'bg-blue-500' : 'bg-gray-200'} px-2 py-0.5 rounded-full`}>
+                            {getReactionEmoji(reaction)}
+                          </span>
+                        ))}
                       </div>
-                    ) : (
-                      <p className="text-sm break-words whitespace-pre-wrap">{msg.body}</p>
+                    )}
+
+                    {/* Action buttons */}
+                    <div className="opacity-0 group-hover:opacity-100 transition-opacity mt-1 flex gap-2">
+                      <button
+                        onClick={() => setReplyingTo(msg)}
+                        className="text-xs opacity-70 hover:opacity-100"
+                      >
+                        Reply
+                      </button>
+                      <button
+                        onClick={() => setShowReactionPicker(msg.guid)}
+                        className="text-xs opacity-70 hover:opacity-100"
+                      >
+                        React
+                      </button>
+                    </div>
+
+                    {/* Emoji picker */}
+                    {showReactionPicker === msg.guid && (
+                      <div className={`absolute mt-2 bg-white rounded-lg shadow-lg p-2 flex gap-1 z-20 ${isOutbound ? 'right-0' : 'left-0'}`}>
+                        {REACTIONS.map(reaction => (
+                          <button
+                            key={reaction.type}
+                            onClick={() => handleReact(msg.guid, reaction)}
+                            className="text-2xl hover:scale-125 transition-transform"
+                            title={reaction.label}
+                          >
+                            {reaction.emoji}
+                          </button>
+                        ))}
+                      </div>
                     )}
                   </div>
-
-                  <div className={`flex items-center mt-0.5 px-1 ${isOutbound ? 'justify-end' : 'justify-start'}`}>
-                    <span className="text-xs opacity-70">
-                      {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </span>
-                    {getStatusIcon(msg)}
-                  </div>
-
-                  {msg.reactions && msg.reactions.length > 0 && (
-                    <div className="flex gap-1 mt-1">
-                      {msg.reactions.map((reaction, idx) => (
-                        <span key={idx} className="text-xs bg-gray-100 px-2 py-1 rounded-full">
-                          {getReactionEmoji(reaction)}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
-                  <div className="opacity-0 group-hover:opacity-100 transition-opacity mt-1 flex gap-2">
-                    <button
-                      onClick={() => setReplyingTo(msg)}
-                      className="text-xs opacity-70 hover:opacity-100"
-                    >
-                      Reply
-                    </button>
-                    <button
-                      onClick={() => setShowReactionPicker(msg.guid)}
-                      className="text-xs opacity-70 hover:opacity-100"
-                    >
-                      React
-                    </button>
-                  </div>
-
-                  {showReactionPicker === msg.guid && (
-                    <div className={`absolute mt-2 bg-white rounded-lg shadow-lg p-2 flex gap-1 z-20 ${isOutbound ? 'right-0' : 'left-0'}`}>
-                      {REACTIONS.map(reaction => (
-                        <button
-                          key={reaction.type}
-                          onClick={() => handleReact(msg.guid, reaction)}
-                          className="text-2xl hover:scale-125 transition-transform"
-                          title={reaction.label}
-                        >
-                          {reaction.emoji}
-                        </button>
-                      ))}
-                    </div>
-                  )}
                 </div>
               </div>
             )
