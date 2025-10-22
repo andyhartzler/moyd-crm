@@ -973,7 +973,7 @@ function MessengerContent() {
                   </div>
 
                   {showReactionPicker === msg.guid && (
-                    <div className="absolute mt-2 bg-white rounded-lg shadow-lg p-2 flex gap-1 z-20">
+                    <div className={`absolute mt-2 bg-white rounded-lg shadow-lg p-2 flex gap-1 z-20 ${isOutbound ? 'right-0' : 'left-0'}`}>
                       {REACTIONS.map(reaction => (
                         <button
                           key={reaction.type}

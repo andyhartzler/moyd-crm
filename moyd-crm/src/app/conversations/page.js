@@ -33,8 +33,10 @@ export default function ConversationsPage() {
 
       if (error) throw error
 
-      // Process conversations
-      const processedConversations = data.map(conv => {
+      // Process conversations and deduplicate by member_id (keep most recent)
+      const memberConversations = new Map()
+
+      data.forEach(conv => {
         let member = conv.member
         if (typeof member === 'string') {
           try {
@@ -50,7 +52,7 @@ export default function ConversationsPage() {
         )
         const lastMessage = sortedMessages[0]
 
-        return {
+        const processedConv = {
           ...conv,
           member,
           unreadCount: conv.messages?.filter(
@@ -58,9 +60,16 @@ export default function ConversationsPage() {
           ).length || 0,
           lastMessage
         }
+
+        // Only keep the most recent conversation per member
+        const memberId = conv.member_id
+        if (!memberConversations.has(memberId) ||
+            new Date(conv.updated_at || conv.created_at) > new Date(memberConversations.get(memberId).updated_at || memberConversations.get(memberId).created_at)) {
+          memberConversations.set(memberId, processedConv)
+        }
       })
 
-      setConversations(processedConversations)
+      setConversations(Array.from(memberConversations.values()))
     } catch (error) {
       console.error('Error loading conversations:', error)
     } finally {

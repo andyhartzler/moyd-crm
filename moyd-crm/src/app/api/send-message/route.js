@@ -346,10 +346,14 @@ async function handleTextMessage(request) {
         throw new Error(result.error?.message || result.message || 'Failed to send message')
       }
 
-      // Save message to database in background
+      // Save message to database (await to ensure it's saved before webhook arrives)
       if (memberId) {
-        saveMessageToDatabase(memberId, chatGuid, message, phone, result, 'outbound', threadOriginatorGuid)
-          .catch(err => console.error('⚠️ Background DB save error:', err))
+        try {
+          await saveMessageToDatabase(memberId, chatGuid, message, phone, result, 'outbound', threadOriginatorGuid)
+        } catch (err) {
+          console.error('⚠️ Error saving message to database:', err)
+          // Don't fail the request if DB save fails - message was still sent
+        }
       }
 
       return NextResponse.json({

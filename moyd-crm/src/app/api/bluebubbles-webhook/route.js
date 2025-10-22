@@ -249,20 +249,25 @@ async function handleIncomingReaction(message) {
       return
     }
 
-    // Find conversation
+    // Find conversation (use most recent if multiple exist)
     const { data: conversation } = await supabase
       .from('conversations')
       .select('id')
       .eq('member_id', members.id)
+      .order('updated_at', { ascending: false })
+      .limit(1)
       .maybeSingle()
 
     if (!conversation) {
-      console.log('Conversation not found for reaction')
+      console.log('⚠️ Conversation not found for reaction')
       return
     }
 
-    // Clean the associated GUID (remove part index if present)
-    const cleanAssociatedGuid = message.associatedMessageGuid?.split(':')[0]
+    // Clean the associated GUID (remove part index like "p:0/" from "p:0/03E75927...")
+    let cleanAssociatedGuid = message.associatedMessageGuid
+    if (cleanAssociatedGuid?.includes('/')) {
+      cleanAssociatedGuid = cleanAssociatedGuid.split('/')[1] // Get the part after the slash
+    }
 
     const reactionData = {
       conversation_id: conversation.id,
