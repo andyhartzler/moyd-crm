@@ -42,20 +42,27 @@ async function handleOutboundMessageUpdate(message) {
     console.log('📤 Processing outbound message update:', message.guid?.substring(0, 20))
     const hasAttachments = message.hasAttachments && message.attachments?.length > 0
     const hasText = message.text && message.text.trim().length > 0
-    
+
     console.log('Message details:', {
       text: message.text?.substring(0, 50) || '(empty)',
       hasText,
       hasAttachments,
-      attachmentCount: message.attachments?.length || 0
+      attachmentCount: message.attachments?.length || 0,
+      dateDelivered: message.dateDelivered ? 'YES' : 'NO',
+      dateRead: message.dateRead ? 'YES' : 'NO'
     })
 
     // Try to find the message by GUID first
+    console.log('🔍 Looking for message with GUID:', message.guid)
     let { data: existingMessage } = await supabase
       .from('messages')
       .select('*')
       .eq('guid', message.guid)
       .maybeSingle()
+
+    if (existingMessage) {
+      console.log('✅ Found message by exact GUID match')
+    }
 
     // If not found by real GUID, try to find by matching temp message
     if (!existingMessage) {

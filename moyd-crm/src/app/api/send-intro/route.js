@@ -255,7 +255,7 @@ export async function POST(request) {
               message: attachmentResult.message
             })
 
-            // Save vCard message with REAL GUID
+            // Save vCard message with REAL GUID - await to ensure it's in DB before webhook
             if (realVCardGuid) {
               const { error: vCardDbError } = await supabase
                 .from('messages')
@@ -275,6 +275,7 @@ export async function POST(request) {
                 console.error('⚠️ Error saving vCard to database:', vCardDbError)
               } else {
                 console.log('✅ vCard message saved to database with GUID:', realVCardGuid)
+                console.log('   Waiting for webhook to update delivery status...')
               }
             }
 
