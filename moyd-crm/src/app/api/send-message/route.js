@@ -155,11 +155,8 @@ async function handleAttachment(request) {
 
       console.log('✅ Attachment submitted successfully!')
 
-      // Save to database in background if memberId provided
-      if (memberId) {
-        saveAttachmentToDatabase(memberId, chatGuid, phone, file.name, message)
-          .catch(err => console.error('⚠️ Background DB save error:', err))
-      }
+      // 🔥 FIX: Don't save to database - webhook will handle it
+      console.log('✅ Attachment sent to BlueBubbles, webhook will save it')
 
       return NextResponse.json({
         success: true,
@@ -172,13 +169,10 @@ async function handleAttachment(request) {
       
       if (fetchError.name === 'AbortError') {
         console.log('⚡ BlueBubbles didn\'t respond quickly, but attachment is likely queued and sending')
-        
-        // Save to database anyway since it's likely queued
-        if (memberId) {
-          saveAttachmentToDatabase(memberId, chatGuid, phone, file.name, message)
-            .catch(err => console.error('⚠️ Background DB save error:', err))
-        }
-        
+
+        // 🔥 FIX: Don't save to database - webhook will handle it when it sends
+        console.log('✅ Attachment queued in BlueBubbles, webhook will save it when sent')
+
         return NextResponse.json({
           success: true,
           message: 'Attachment submitted successfully',
@@ -281,11 +275,8 @@ async function handleTextMessage(request) {
         throw new Error(result.error?.message || result.message || 'Failed to send reaction')
       }
 
-      // Save reaction to database in background
-      if (memberId) {
-        saveReactionToDatabase(memberId, chatGuid, phone, result, messageGuid, reactionCode)
-          .catch(err => console.error('⚠️ Background DB save error:', err))
-      }
+      // 🔥 FIX: Don't save to database - webhook will handle it
+      console.log('✅ Reaction sent to BlueBubbles, webhook will save it')
 
       return NextResponse.json({
         success: true,
@@ -338,11 +329,8 @@ async function handleTextMessage(request) {
         throw new Error(result.error?.message || result.message || 'Failed to send message')
       }
 
-      // Save message to database in background
-      if (memberId) {
-        saveMessageToDatabase(memberId, chatGuid, message, phone, result, 'outbound', threadOriginatorGuid)
-          .catch(err => console.error('⚠️ Background DB save error:', err))
-      }
+      // 🔥 FIX: Don't save to database - webhook will handle it
+      console.log('✅ Message sent to BlueBubbles, webhook will save it')
 
       return NextResponse.json({
         success: true,
@@ -364,192 +352,6 @@ async function handleTextMessage(request) {
   }
 }
 
-// Save message to database
-async function saveMessageToDatabase(memberId, chatGuid, messageBody, phone, result, direction, threadOriginatorGuid = null) {
-  try {
-    const { createClient } = require('@supabase/supabase-js')
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-    )
-
-    console.log('💾 Saving message to database...')
-
-    // Find existing conversation or create one
-    const { data: existingConv } = await supabase
-      .from('conversations')
-      .select('id')
-      .eq('member_id', memberId)
-      .maybeSingle()
-
-    let conversationId
-    if (existingConv) {
-      conversationId = existingConv.id
-      
-      // Update conversation
-      await supabase
-        .from('conversations')
-        .update({
-          last_message: messageBody,
-          last_message_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', conversationId)
-    } else {
-      const { data: newConv } = await supabase
-        .from('conversations')
-        .insert({
-          member_id: memberId,
-          last_message: messageBody,
-          last_message_at: new Date().toISOString()
-        })
-        .select()
-        .single()
-      
-      conversationId = newConv.id
-    }
-
-    // Save message (🔥 REMOVED has_attachments field)
-    const messageData = {
-      conversation_id: conversationId,
-      body: messageBody,
-      direction: direction,
-      delivery_status: direction === 'outbound' ? 'sent' : 'delivered',
-      sender_phone: phone,
-      guid: result.data?.guid || `temp_${Date.now()}`,
-      is_read: direction === 'outbound',
-      created_at: new Date().toISOString()
-    }
-
-    if (threadOriginatorGuid) {
-      messageData.thread_originator_guid = threadOriginatorGuid
-    }
-
-    const { error: msgError } = await supabase
-      .from('messages')
-      .insert(messageData)
-
-    if (msgError) {
-      console.error('⚠️ Error creating message:', msgError)
-    } else {
-      console.log('✅ Message saved to database!')
-    }
-  } catch (error) {
-    console.error('❌ Database error (message was still sent):', error)
-  }
-}
-
-// Save attachment to database (🔥 REMOVED has_attachments field)
-async function saveAttachmentToDatabase(memberId, chatGuid, phone, fileName, message) {
-  try {
-    const { createClient } = require('@supabase/supabase-js')
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-    )
-
-    console.log('💾 Saving attachment message to database...')
-
-    // Find existing conversation or create one
-    const { data: existingConv } = await supabase
-      .from('conversations')
-      .select('id')
-      .eq('member_id', memberId)
-      .maybeSingle()
-
-    let conversationId
-    const displayMessage = message || `📎 ${fileName}`
-    
-    if (existingConv) {
-      conversationId = existingConv.id
-      
-      // Update conversation
-      await supabase
-        .from('conversations')
-        .update({
-          last_message: displayMessage,
-          last_message_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', conversationId)
-    } else {
-      const { data: newConv } = await supabase
-        .from('conversations')
-        .insert({
-          member_id: memberId,
-          last_message: displayMessage,
-          last_message_at: new Date().toISOString()
-        })
-        .select()
-        .single()
-      
-      conversationId = newConv.id
-    }
-
-    // Save message with attachment indicator (🔥 REMOVED has_attachments field)
-    const { error: msgError } = await supabase
-      .from('messages')
-      .insert({
-        conversation_id: conversationId,
-        body: message || '',
-        direction: 'outbound',
-        delivery_status: 'sent',
-        sender_phone: phone,
-        guid: `temp_attachment_${Date.now()}`,
-        is_read: true,
-        created_at: new Date().toISOString()
-      })
-
-    if (msgError) {
-      console.error('⚠️ Error creating attachment message:', msgError)
-    } else {
-      console.log('✅ Attachment message saved to database!')
-    }
-  } catch (error) {
-    console.error('❌ Database error (attachment was still sent):', error)
-  }
-}
-
-// Save reaction to database
-async function saveReactionToDatabase(memberId, chatGuid, phone, result, associatedMessageGuid, associatedMessageType) {
-  try {
-    const { createClient } = require('@supabase/supabase-js')
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-    )
-
-    // Find conversation
-    const { data: existingConv } = await supabase
-      .from('conversations')
-      .select('id')
-      .eq('member_id', memberId)
-      .maybeSingle()
-
-    if (!existingConv) {
-      console.warn('⚠️ Conversation not found for reaction')
-      return
-    }
-
-    // Create reaction record
-    const { error: msgError } = await supabase.from('messages').insert({
-      conversation_id: existingConv.id,
-      body: '',
-      direction: 'outbound',
-      delivery_status: 'sent',
-      sender_phone: phone,
-      guid: result.data?.guid || `temp_reaction_${Date.now()}`,
-      associated_message_guid: associatedMessageGuid,
-      associated_message_type: associatedMessageType,
-      is_read: false
-    })
-
-    if (msgError) {
-      console.error('⚠️ Error creating reaction record:', msgError)
-    } else {
-      console.log('✅ Reaction saved to database!')
-    }
-  } catch (error) {
-    console.error('❌ Database error (reaction was still sent):', error)
-  }
-}
+// 🔥 REMOVED: All database save functions
+// The webhook handles ALL message saving (both inbound and outbound)
+// This prevents duplicate messages and ensures correct GUID tracking

@@ -36,165 +36,158 @@ export async function POST(request) {
   }
 }
 
-// 🔥 IMPROVED: Better outbound message matching logic
+// 🔥 FIXED: Create outbound messages instead of trying to update temp messages
 async function handleOutboundMessageUpdate(message) {
   try {
-    console.log('📤 Processing outbound message update:', message.guid?.substring(0, 20))
-    const hasAttachments = message.hasAttachments && message.attachments?.length > 0
-    const hasText = message.text && message.text.trim().length > 0
-    
-    console.log('Message details:', {
-      text: message.text?.substring(0, 50) || '(empty)',
-      hasText,
-      hasAttachments,
-      attachmentCount: message.attachments?.length || 0
-    })
+    console.log('📤 Processing outbound message:', message.guid?.substring(0, 20))
 
-    // Try to find the message by GUID first
-    let { data: existingMessage } = await supabase
+    // Check if this message already exists in database
+    const { data: existingMessage } = await supabase
       .from('messages')
-      .select('*')
+      .select('id')
       .eq('guid', message.guid)
       .maybeSingle()
 
-    // If not found by real GUID, try to find by matching temp message
-    if (!existingMessage) {
-      console.log('🔍 Message not found by GUID, checking for recent temp messages')
-      
-      // Find messages from last 60 seconds with temp GUIDs
-      const recentTime = new Date(Date.now() - 60000).toISOString()
-      const { data: recentMessages } = await supabase
-        .from('messages')
-        .select('*')
-        .eq('direction', 'outbound')
-        .gte('created_at', recentTime)
-        .like('guid', '%temp%')
-        .order('created_at', { ascending: false })
-        .limit(20)
+    if (existingMessage) {
+      console.log('✅ Message already exists, skipping')
+      return
+    }
 
-      console.log(`Found ${recentMessages?.length || 0} recent temp messages`)
+    // This is a new outbound message - create it just like an inbound message
+    // Extract phone number from chat
+    let phone = null
 
-      if (recentMessages && recentMessages.length > 0) {
-        // 🔥 IMPROVED MATCHING LOGIC
-        
-        // Strategy 1: Match attachment-only messages (empty or \ufffc body)
-        if (hasAttachments && !hasText) {
-          console.log('🔍 Looking for temp attachment message (empty/attachment body)...')
-          
-          // Find temp messages with empty body or attachment character
-          existingMessage = recentMessages.find(m => 
-            (!m.body || m.body.trim() === '' || m.body === '\ufffc') &&
-            (m.guid.includes('temp-intro-vcard') || m.guid.includes('temp_attachment'))
-          )
-          
-          if (existingMessage) {
-            console.log('✅ Matched ATTACHMENT message by empty/\ufffc body pattern')
-          }
-        }
-        
-        // Strategy 2: Match text messages by exact content
-        if (!existingMessage && hasText) {
-          console.log('🔍 Looking for temp text message by content...')
-          
-          // Match by exact text content
-          existingMessage = recentMessages.find(m => 
-            m.body && m.body.trim() === message.text.trim()
-          )
-          
-          if (existingMessage) {
-            console.log('✅ Matched TEXT message by exact content')
-          }
-        }
-        
-        // Strategy 3: Match by GUID pattern (intro-text vs intro-vcard)
-        if (!existingMessage) {
-          console.log('🔍 Looking for temp message by GUID pattern...')
-          
-          if (hasAttachments && !hasText) {
-            // Look for vcard temp messages
-            existingMessage = recentMessages.find(m => 
-              m.guid.includes('temp-intro-vcard') || 
-              (m.guid.includes('temp') && (!m.body || m.body.trim() === '' || m.body === '\ufffc'))
-            )
-            if (existingMessage) {
-              console.log('✅ Matched by vcard GUID pattern')
-            }
-          } else if (hasText) {
-            // Look for text temp messages (avoid matching ones with empty body)
-            existingMessage = recentMessages.find(m => 
-              m.guid.includes('temp-intro-text') ||
-              (m.guid.includes('temp') && m.body && m.body.trim().length > 0 && m.body !== '\ufffc')
-            )
-            if (existingMessage) {
-              console.log('✅ Matched by text GUID pattern')
-            }
-          }
-        }
-
-        // Strategy 4: Last resort - match by timing and type
-        if (!existingMessage && recentMessages.length > 0) {
-          console.log('⚠️ Using timing match as last resort')
-          
-          // Filter to messages that match the type (text vs attachment)
-          const matchingTypeMessages = recentMessages.filter(m => {
-            if (hasAttachments && !hasText) {
-              // Incoming is attachment-only, match to empty/\ufffc body messages
-              return !m.body || m.body.trim() === '' || m.body === '\ufffc'
-            } else if (hasText) {
-              // Incoming has text, match to non-empty body messages  
-              return m.body && m.body.trim().length > 0 && m.body !== '\ufffc'
-            }
-            return true
-          })
-          
-          if (matchingTypeMessages.length > 0) {
-            existingMessage = matchingTypeMessages[0]
-            console.log('⚠️ Matched message by timing (most recent of matching type)')
-          }
-        }
-
-        // Update the GUID if we found a match
-        if (existingMessage) {
-          console.log('🔧 Updating GUID from', existingMessage.guid, 'to', message.guid)
-          
-          await supabase
-            .from('messages')
-            .update({ guid: message.guid })
-            .eq('id', existingMessage.id)
-        }
+    if (message.handle?.address) {
+      phone = message.handle.address
+    } else if (message.chats && message.chats.length > 0 && message.chats[0]?.chatIdentifier) {
+      const chatId = message.chats[0].chatIdentifier
+      if (chatId.includes(';-;')) {
+        phone = chatId.split(';-;')[1]
+      } else {
+        phone = chatId
       }
     }
 
-    // Now update the message with delivery status
-    if (existingMessage) {
-      const updateData = {
-        delivery_status: 'delivered'
-      }
+    if (!phone) {
+      console.log('Could not extract phone from outbound message')
+      return
+    }
 
-      if (message.dateDelivered) {
-        updateData.date_delivered = new Date(message.dateDelivered).toISOString()
-      }
-
-      if (message.dateRead) {
-        updateData.is_read = true
-        updateData.date_read = new Date(message.dateRead).toISOString()
-      }
-
-      const { error } = await supabase
-        .from('messages')
-        .update(updateData)
-        .eq('id', existingMessage.id)
-
-      if (error) {
-        console.error('Error updating outbound message:', error)
+    // Normalize phone
+    let normalizedPhone = phone.replace(/[\s\-\(\)]/g, '')
+    if (!normalizedPhone.startsWith('+')) {
+      if (normalizedPhone.startsWith('1') && normalizedPhone.length === 11) {
+        normalizedPhone = '+' + normalizedPhone
       } else {
-        console.log('✅ Outbound message updated successfully')
+        normalizedPhone = '+1' + normalizedPhone
       }
+    }
+
+    console.log('Looking for member with phone:', normalizedPhone)
+
+    // Find member
+    const { data: members } = await supabase
+      .from('members')
+      .select('id')
+      .eq('phone_e164', normalizedPhone)
+      .maybeSingle()
+
+    if (!members) {
+      console.log('Member not found for outbound message:', normalizedPhone)
+      return
+    }
+
+    // Get message text for last_message field
+    let messageBody = message.text || ''
+
+    // Handle attachment-only messages
+    if (message.hasAttachments && (!messageBody || messageBody.trim() === '')) {
+      messageBody = '\ufffc' // Unicode attachment character
+    }
+
+    // Find or create conversation
+    const { data: existingConv } = await supabase
+      .from('conversations')
+      .select('id')
+      .eq('member_id', members.id)
+      .maybeSingle()
+
+    let conversation
+    if (existingConv) {
+      console.log('Updating existing conversation')
+      const { data: updatedConv } = await supabase
+        .from('conversations')
+        .update({
+          updated_at: new Date().toISOString(),
+          last_message: messageBody,
+          last_message_at: new Date(message.dateCreated).toISOString()
+        })
+        .eq('id', existingConv.id)
+        .select()
+        .single()
+
+      conversation = updatedConv
+
     } else {
-      console.log('⚠️ Could not find existing message to update')
+      console.log('Creating new conversation')
+      const { data: newConv } = await supabase
+        .from('conversations')
+        .insert({
+          member_id: members.id,
+          last_message: messageBody,
+          last_message_at: new Date(message.dateCreated).toISOString()
+        })
+        .select()
+        .single()
+
+      conversation = newConv
+    }
+
+    if (!conversation) {
+      console.log('Failed to get/create conversation')
+      return
+    }
+
+    // Create the outbound message
+    const messageData = {
+      conversation_id: conversation.id,
+      body: messageBody,
+      direction: 'outbound',
+      delivery_status: 'delivered',
+      is_read: true,
+      sender_phone: normalizedPhone,
+      guid: message.guid,
+      created_at: new Date(message.dateCreated).toISOString()
+    }
+
+    // Add optional fields
+    if (message.associatedMessageGuid) {
+      messageData.associated_message_guid = message.associatedMessageGuid
+    }
+    if (message.associatedMessageType !== null && message.associatedMessageType !== undefined) {
+      messageData.associated_message_type = message.associatedMessageType
+    }
+    if (message.threadOriginatorGuid) {
+      messageData.thread_originator_guid = message.threadOriginatorGuid
+    }
+    if (message.dateDelivered) {
+      messageData.date_delivered = new Date(message.dateDelivered).toISOString()
+    }
+    if (message.dateRead) {
+      messageData.date_read = new Date(message.dateRead).toISOString()
+    }
+
+    const { error } = await supabase
+      .from('messages')
+      .insert(messageData)
+
+    if (error) {
+      console.error('Error creating outbound message:', error)
+    } else {
+      console.log('✅ Outbound message created successfully:', message.guid?.substring(0, 20))
     }
   } catch (error) {
-    console.error('Error handling outbound message update:', error)
+    console.error('Error handling outbound message:', error)
   }
 }
 

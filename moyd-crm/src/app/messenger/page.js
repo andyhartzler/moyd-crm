@@ -567,24 +567,21 @@ function MessengerContent() {
 
   const getStatusIcon = (msg) => {
     if (msg.direction !== 'outbound') return null
-    
-    // Better status icons
-    if (msg.delivery_status === 'sending' || msg.delivery_status === 'sent') {
-      return <Clock className="h-3 w-3 text-blue-300 ml-1 animate-pulse" />
-    }
-    
+
+    // 🔥 FIXED: Only two states per BlueBubbles API - delivered or failed
+    // "sending" doesn't exist - messages appear when webhook fires after delivery
     if (msg.delivery_status === 'delivered' && msg.is_read) {
       return <span className="text-blue-300 ml-1">✓✓</span>
     }
-    
+
     if (msg.delivery_status === 'delivered') {
       return <span className="text-blue-300 ml-1">✓</span>
     }
-    
+
     if (msg.delivery_status === 'failed') {
       return <AlertCircle className="h-3 w-3 text-red-300 ml-1" />
     }
-    
+
     return null
   }
 

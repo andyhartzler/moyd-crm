@@ -170,27 +170,8 @@ export async function POST(request) {
           throw new Error(textResult.error?.message || 'Failed to send text message')
         }
 
-        // Save text message to database
-        if (realTextGuid) {
-          const { error: textDbError } = await supabase
-            .from('messages')
-            .insert({
-              conversation_id: conversationId,
-              body: introMessage,
-              direction: 'outbound',
-              delivery_status: 'sent',
-              sender_phone: recipient.phone,
-              guid: realTextGuid,
-              is_read: true,
-              created_at: new Date().toISOString()
-            })
-          
-          if (textDbError) {
-            console.error('⚠️ Error saving text to database:', textDbError)
-          } else {
-            console.log('✅ Text message saved to database')
-          }
-        }
+        // 🔥 FIX: Don't save to database - webhook will handle it
+        console.log('✅ Intro text sent to BlueBubbles, webhook will save it')
 
         // Small delay between text and attachment
         await new Promise(resolve => setTimeout(resolve, 1500))
@@ -253,89 +234,24 @@ export async function POST(request) {
               message: attachmentResult.message
             })
 
-            // Save vCard message with REAL GUID
-            if (realVCardGuid) {
-              const { error: vCardDbError } = await supabase
-                .from('messages')
-                .insert({
-                  conversation_id: conversationId,
-                  body: '\ufffc', // Unicode object replacement character for attachments
-                  direction: 'outbound',
-                  delivery_status: 'sent',
-                  sender_phone: recipient.phone,
-                  guid: realVCardGuid,
-                  is_read: true,
-                  is_contact_card: true,
-                  created_at: new Date().toISOString()
-                })
-
-              if (vCardDbError) {
-                console.error('⚠️ Error saving vCard to database:', vCardDbError)
-              } else {
-                console.log('✅ vCard message saved to database with GUID:', realVCardGuid)
-              }
-            }
+            // 🔥 FIX: Don't save to database - webhook will handle it
+            console.log('✅ vCard sent to BlueBubbles, webhook will save it')
 
           } catch (e) {
             console.log('⚠️ Attachment response not JSON:', responseText.substring(0, 200))
-            
+
             // If we get a timeout/error, the message is likely queued
             if (responseText.includes('524') || !attachmentResponse.ok) {
-              console.log('⚠️ Message queued - webhook will update when it sends')
-              
-              // Save with temp GUID, webhook will update it
-              const tempVCardGuid = `temp-vcard-${Date.now()}`
-              
-              const { error: vCardDbError } = await supabase
-                .from('messages')
-                .insert({
-                  conversation_id: conversationId,
-                  body: '\ufffc',
-                  direction: 'outbound',
-                  delivery_status: 'sending',
-                  sender_phone: recipient.phone,
-                  guid: tempVCardGuid,
-                  is_read: true,
-                  is_contact_card: true,
-                  created_at: new Date().toISOString()
-                })
-              
-              if (vCardDbError) {
-                console.error('⚠️ Error saving temp vCard:', vCardDbError)
-              } else {
-                console.log('✅ vCard saved with temp GUID, waiting for webhook')
-              }
+              console.log('⚠️ Message queued - webhook will save it when it sends')
             }
           }
 
         } catch (fetchError) {
           clearTimeout(timeoutId)
-          
+
           if (fetchError.name === 'AbortError') {
             console.log('⏱️ Timeout - BlueBubbles processing in background')
-            
-            // Save with temp GUID
-            const tempVCardGuid = `temp-vcard-${Date.now()}`
-            
-            const { error: vCardDbError } = await supabase
-              .from('messages')
-              .insert({
-                conversation_id: conversationId,
-                body: '\ufffc',
-                direction: 'outbound',
-                delivery_status: 'sending',
-                sender_phone: recipient.phone,
-                guid: tempVCardGuid,
-                is_read: true,
-                is_contact_card: true,
-                created_at: new Date().toISOString()
-              })
-            
-            if (vCardDbError) {
-              console.error('⚠️ Error saving timeout vCard:', vCardDbError)
-            } else {
-              console.log('✅ vCard queued, saved with temp GUID')
-            }
+            console.log('✅ vCard queued, webhook will save it when sent')
           } else {
             console.error('❌ Fetch error:', fetchError)
             throw fetchError
