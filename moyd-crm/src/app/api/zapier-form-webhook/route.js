@@ -10,7 +10,6 @@ export async function GET() {
 }
 
 // Comprehensive Missouri Counties and Cities Lookup
-// Keys include "County" for clarity, but we'll strip it when storing
 const MISSOURI_COUNTIES = {
   'Adair County': { district: 'CD-6', cities: ['kirksville', 'brashear', 'gibbs', 'novinger'] },
   'Andrew County': { district: 'CD-6', cities: ['savannah', 'amazonia', 'bolckow', 'fillmore', 'helena', 'rosendale'] },
@@ -133,13 +132,11 @@ const MISSOURI_COUNTIES = {
 function getDistrictFromCounty(countyName) {
   if (!countyName) return null
   
-  // Try exact match first (with "County" suffix)
   const withCounty = `${countyName} County`
   if (MISSOURI_COUNTIES[withCounty]) {
     return MISSOURI_COUNTIES[withCounty].district
   }
   
-  // Try searching through all counties (case-insensitive)
   const normalizedCounty = countyName.toLowerCase().trim()
   for (const [key, value] of Object.entries(MISSOURI_COUNTIES)) {
     const countyBaseName = key.replace(/ County$/i, '').toLowerCase()
@@ -166,7 +163,6 @@ function expandMissouriCity(address) {
   
   let expandedAddress = address
   
-  // Check if address starts with or contains any abbreviation
   for (const [abbrev, fullName] of Object.entries(cityAbbreviations)) {
     const regex = new RegExp(`\\b${abbrev}\\b`, 'gi')
     expandedAddress = expandedAddress.replace(regex, fullName)
@@ -181,6 +177,101 @@ function stripCountySuffix(countyName) {
   return countyName.replace(/ County$/i, '').trim()
 }
 
+// Calculate zodiac sign from date of birth
+function getZodiacSign(dateOfBirth) {
+  if (!dateOfBirth) return null
+  
+  const date = new Date(dateOfBirth)
+  const day = date.getDate()
+  const month = date.getMonth() + 1 // JavaScript months are 0-indexed
+  
+  if ((month === 3 && day >= 21) || (month === 4 && day <= 19)) return 'Aries'
+  if ((month === 4 && day >= 20) || (month === 5 && day <= 20)) return 'Taurus'
+  if ((month === 5 && day >= 21) || (month === 6 && day <= 20)) return 'Gemini'
+  if ((month === 6 && day >= 21) || (month === 7 && day <= 22)) return 'Cancer'
+  if ((month === 7 && day >= 23) || (month === 8 && day <= 22)) return 'Leo'
+  if ((month === 8 && day >= 23) || (month === 9 && day <= 22)) return 'Virgo'
+  if ((month === 9 && day >= 23) || (month === 10 && day <= 22)) return 'Libra'
+  if ((month === 10 && day >= 23) || (month === 11 && day <= 21)) return 'Scorpio'
+  if ((month === 11 && day >= 22) || (month === 12 && day <= 21)) return 'Sagittarius'
+  if ((month === 12 && day >= 22) || (month === 1 && day <= 19)) return 'Capricorn'
+  if ((month === 1 && day >= 20) || (month === 2 && day <= 18)) return 'Aquarius'
+  if ((month === 2 && day >= 19) || (month === 3 && day <= 20)) return 'Pisces'
+  
+  return null
+}
+
+// Check if social media input is valid
+function isValidSocialInput(input) {
+  if (!input || typeof input !== 'string') return false
+  
+  const invalidPatterns = [
+    /^n\/?a$/i,
+    /^none$/i,
+    /not\s*active/i,
+    /don'?t\s*use/i,
+    /don'?t\s*have/i,
+    /no\s*account/i,
+    /^-+$/,
+    /^_+$/,
+    /^\s*$/
+  ]
+  
+  return !invalidPatterns.some(pattern => pattern.test(input.trim()))
+}
+
+// Format social media handle to URL
+function formatSocialMediaHandle(input, platform) {
+  if (!isValidSocialInput(input)) return null
+  
+  const trimmed = input.trim()
+  
+  // Split by / or space to handle multiple usernames
+  const handles = trimmed.split(/[\/\s]+/).filter(h => h.trim() !== '')
+  
+  // Process each handle
+  const urls = handles.map(handle => {
+    // Remove @ symbol if present
+    const cleanHandle = handle.replace(/^@/, '').trim()
+    
+    if (!cleanHandle) return null
+    
+    // Generate URL based on platform
+    switch(platform) {
+      case 'instagram':
+        return `https://instagram.com/${cleanHandle}`
+      case 'tiktok':
+        return `https://tiktok.com/@${cleanHandle}`
+      case 'x':
+        return `https://x.com/${cleanHandle}`
+      default:
+        return null
+    }
+  }).filter(url => url !== null)
+  
+  // Join multiple URLs with a space
+  return urls.length > 0 ? urls.join(' ') : null
+}
+
+// Convert timestamp to YYYY-MM-DD format
+function formatDateJoined(timestamp) {
+  if (!timestamp) return null
+  
+  try {
+    const date = new Date(timestamp)
+    if (isNaN(date.getTime())) return null
+    
+    const year = date.getFullYear()
+    const month = String(date.getMonth() + 1).padStart(2, '0')
+    const day = String(date.getDate()).padStart(2, '0')
+    
+    return `${year}-${month}-${day}`
+  } catch (error) {
+    console.error('Error formatting date_joined:', error)
+    return null
+  }
+}
+
 // Function to geocode address and get county + congressional district
 async function getLocationInfo(address) {
   if (!address || address.trim() === '') {
@@ -188,21 +279,17 @@ async function getLocationInfo(address) {
   }
 
   try {
-    // First, try hardcoded city lookup (fastest and most accurate for MO)
     const cityLookup = lookupByCity(address)
     if (cityLookup.county && cityLookup.district) {
       return cityLookup
     }
 
-    // Expand city abbreviations
     let processedAddress = expandMissouriCity(address)
     
-    // Always append Missouri to the address for better geocoding
     if (!processedAddress.toLowerCase().includes('missouri') && !processedAddress.toLowerCase().includes(' mo')) {
       processedAddress = processedAddress + ', Missouri'
     }
     
-    // Try US Census Geocoding API
     const encodedAddress = encodeURIComponent(processedAddress)
     const geocodeUrl = `https://geocoding.geo.census.gov/geocoder/geographies/onelineaddress?address=${encodedAddress}&benchmark=Public_AR_Current&vintage=Current_Current&format=json`
     
@@ -213,18 +300,15 @@ async function getLocationInfo(address) {
       const match = data.result.addressMatches[0]
       const geographies = match.geographies
       
-      // Get county name and strip "County" suffix
       let county = geographies['Counties']?.[0]?.NAME || null
       county = stripCountySuffix(county)
       
-      // Get congressional district
       const districtData = geographies['2020 Census Public Use Microdata Areas']?.[0] || 
                           geographies['116th Congressional Districts']?.[0] ||
                           geographies['Congressional Districts']?.[0]
       
       let district = districtData?.BASENAME || districtData?.CD116FP || districtData?.GEOID || null
       
-      // Clean up district format and add CD- prefix
       if (district) {
         const match = district.match(/\d+/)
         district = match ? `CD-${match[0]}` : district
@@ -233,7 +317,6 @@ async function getLocationInfo(address) {
       return { county, district }
     }
     
-    // If geocoding fails, try zip code lookup
     const zipMatch = address.match(/\b\d{5}\b/)
     if (zipMatch) {
       return await lookupByZipCode(zipMatch[0])
@@ -244,7 +327,6 @@ async function getLocationInfo(address) {
   } catch (error) {
     console.error('Geocoding error:', error)
     
-    // Fallback: try zip code if present
     const zipMatch = address.match(/\b\d{5}\b/)
     if (zipMatch) {
       return await lookupByZipCode(zipMatch[0])
@@ -263,11 +345,9 @@ async function lookupByZipCode(zipCode) {
     if (data.places?.[0]) {
       const place = data.places[0]
       
-      // Get county and strip "County" suffix
       let county = place['county'] || null
       county = stripCountySuffix(county)
       
-      // Estimate congressional district based on zip
       const district = estimateDistrictFromZip(zipCode)
       
       return { county, district }
@@ -286,7 +366,6 @@ function lookupByCity(address) {
   
   const normalizedAddress = address.toLowerCase().trim()
   
-  // Search through all counties and their cities
   for (const [countyName, countyData] of Object.entries(MISSOURI_COUNTIES)) {
     for (const city of countyData.cities) {
       if (normalizedAddress.includes(city)) {
@@ -305,21 +384,13 @@ function lookupByCity(address) {
 function estimateDistrictFromZip(zip) {
   const zipPrefix = zip.substring(0, 3)
   
-  // Missouri zip code ranges to congressional district mapping
   const districtMap = {
-    // Kansas City area
     '640': 'CD-5', '641': 'CD-5', '642': 'CD-6',
-    // St. Louis area
     '630': 'CD-1', '631': 'CD-1', '632': 'CD-2', '633': 'CD-1',
-    // Columbia area
     '650': 'CD-4', '652': 'CD-4',
-    // Springfield area
     '656': 'CD-7', '657': 'CD-7', '658': 'CD-7',
-    // Jefferson City
     '651': 'CD-3',
-    // Southeast MO
     '636': 'CD-8', '637': 'CD-8', '638': 'CD-8', '639': 'CD-8',
-    // Northwest MO
     '644': 'CD-6', '645': 'CD-6', '646': 'CD-6',
   }
   
@@ -346,7 +417,7 @@ export async function POST(request) {
       }
     }
 
-    // Helper function to safely convert Yes/No to boolean (only for the 2 boolean fields)
+    // Helper function to safely convert Yes/No to boolean
     const toBoolean = (value) => {
       if (!value || value === '' || value === 'Prefer not to say') return null
       if (value === 'Yes') return true
@@ -357,14 +428,23 @@ export async function POST(request) {
     // Get county and congressional district from address
     const locationInfo = await getLocationInfo(formData.address)
     
-    // Use form data if provided, otherwise use geocoded data
     let county = formData.county || locationInfo.county
     let congressional_district = formData.congressional_district || locationInfo.district
 
-    // If we have a county but no district, look it up from our county data
     if (county && !congressional_district) {
       congressional_district = getDistrictFromCounty(county)
     }
+
+    // Calculate zodiac sign from date of birth
+    const zodiac_sign = getZodiacSign(formData.date_of_birth)
+
+    // Format social media handles to URLs
+    const instagram = formatSocialMediaHandle(formData.instagram, 'instagram')
+    const tiktok = formatSocialMediaHandle(formData.tiktok, 'tiktok')
+    const x = formatSocialMediaHandle(formData.x, 'x')
+
+    // Format date_joined from timestamp to YYYY-MM-DD
+    const date_joined = formatDateJoined(formData.date_joined)
 
     const memberData = {
       name: formData.name,
@@ -373,27 +453,38 @@ export async function POST(request) {
       phone_e164: phone_e164,
       date_of_birth: formData.date_of_birth,
       preferred_pronouns: formData.preferred_pronouns,
-      gender_identity: formData.gender_identity, // TEXT
+      gender_identity: formData.gender_identity,
       address: formData.address,
       county: county,
       congressional_district: congressional_district,
-      race: formData.race, // TEXT
-      sexual_orientation: formData.sexual_orientation, // TEXT
-      desire_to_lead: formData.desire_to_lead, // TEXT (stores "Yes", "No", or "Prefer not to say")
+      race: formData.race,
+      sexual_orientation: formData.sexual_orientation,
+      desire_to_lead: formData.desire_to_lead,
       hours_per_week: formData.hours_per_week,
       education_level: formData.education_level,
-      registered_voter: toBoolean(formData.registered_voter), // BOOLEAN
-      in_school: formData.in_school, // TEXT (stores "Yes", "No", or "Prefer not to say")
+      registered_voter: toBoolean(formData.registered_voter),
+      in_school: formData.in_school,
       school_name: formData.school_name,
-      employed: formData.employed, // TEXT (stores "Yes", "No", or "Prefer not to say")
+      employed: formData.employed,
       industry: formData.industry,
-      hispanic_latino: toBoolean(formData.hispanic_latino), // BOOLEAN
+      hispanic_latino: toBoolean(formData.hispanic_latino),
       accommodations: formData.accommodations,
       community_type: formData.community_type,
       languages: formData.languages,
       why_join: formData.why_join,
       committee: formData.committee,
       notes: formData.notes,
+      // NEW FIELDS:
+      disability: formData.disability,
+      political_experience: formData.political_experience,
+      current_involvement: formData.current_involvement,
+      religion: formData.religion,
+      instagram: instagram, // Formatted as URL
+      tiktok: tiktok, // Formatted as URL
+      x: x, // Formatted as URL
+      zodiac_sign: zodiac_sign, // Auto-calculated from date_of_birth
+      leadership_experience: formData.leadership_experience,
+      date_joined: date_joined, // Converted from timestamp to YYYY-MM-DD
       created_at: new Date().toISOString(),
     }
 
@@ -413,6 +504,13 @@ export async function POST(request) {
       geocoded: {
         county: locationInfo.county,
         district: locationInfo.district
+      },
+      calculated: {
+        zodiac_sign: zodiac_sign,
+        instagram_url: instagram,
+        tiktok_url: tiktok,
+        x_url: x,
+        date_joined_formatted: date_joined
       }
     })
   } catch (error) {
