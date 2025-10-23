@@ -485,6 +485,12 @@ export async function POST(request) {
       zodiac_sign: zodiac_sign, // Auto-calculated from date_of_birth
       leadership_experience: formData.leadership_experience,
       date_joined: date_joined, // Converted from timestamp to YYYY-MM-DD
+      // NEWLY ADDED FIELDS FROM GOALS_AND_AMBITIONS:
+      qualified_experience: formData.qualified_experience,
+      referral_source: formData.referral_source,
+      passionate_issues: formData.passionate_issues,
+      why_issues_matter: formData.why_issues_matter,
+      areas_of_interest: formData.areas_of_interest,
       created_at: new Date().toISOString(),
     }
 
