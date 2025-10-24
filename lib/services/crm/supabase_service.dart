@@ -104,7 +104,7 @@ class SupabaseService extends GetxService {
       final response = await client
           .from('members')
           .select()
-          .eq('phone', normalized)
+          .eq('phone_e164', normalized)
           .maybeSingle();
 
       if (response == null) {
@@ -429,53 +429,163 @@ class SupabaseService extends GetxService {
 class Member {
   final String id;
   final String name;
-  final String phone;
   final String? email;
+  final String? phone;
+  final String? phoneE164;
+  final DateTime? dateOfBirth;
+  final String? preferredPronouns;
+  final String? genderIdentity;
+  final String? address;
   final String? county;
-  final String? district;
-  final String? gender;
-  final int? age;
+  final String? congressionalDistrict;
   final String? race;
-  final List<String>? committees;
+  final String? sexualOrientation;
+  final String? desireToLead;
+  final String? hoursPerWeek;
+  final String? educationLevel;
+  final bool? registeredVoter;
+  final String? inSchool;
+  final String? schoolName;
+  final String? employed;
+  final String? industry;
+  final bool? hispanicLatino;
+  final String? accommodations;
+  final String? communityType;
+  final String? languages;
+  final String? whyJoin;
+  final DateTime? lastContacted;
+  final bool optOut;
+  final List<String>? committee;
+  final String? notes;
+  final DateTime? introSentAt;
+  final String? optOutReason;
+  final DateTime? optOutDate;
+  final DateTime? optInDate;
+  final String? disability;
+  final String? politicalExperience;
+  final String? currentInvolvement;
+  final String? religion;
+  final String? instagram;
+  final String? tiktok;
+  final String? x;
+  final String? zodiacSign;
+  final String? leadershipExperience;
   final DateTime? dateJoined;
-  final bool optedOut;
-  final Map<String, dynamic>? metadata;
+  final String? goalsAndAmbitions;
+  final String? qualifiedExperience;
+  final String? referralSource;
+  final String? passionateIssues;
+  final String? whyIssuesMatter;
+  final String? areasOfInterest;
+  final DateTime? createdAt;
 
   Member({
     required this.id,
     required this.name,
-    required this.phone,
     this.email,
+    this.phone,
+    this.phoneE164,
+    this.dateOfBirth,
+    this.preferredPronouns,
+    this.genderIdentity,
+    this.address,
     this.county,
-    this.district,
-    this.gender,
-    this.age,
+    this.congressionalDistrict,
     this.race,
-    this.committees,
+    this.sexualOrientation,
+    this.desireToLead,
+    this.hoursPerWeek,
+    this.educationLevel,
+    this.registeredVoter,
+    this.inSchool,
+    this.schoolName,
+    this.employed,
+    this.industry,
+    this.hispanicLatino,
+    this.accommodations,
+    this.communityType,
+    this.languages,
+    this.whyJoin,
+    this.lastContacted,
+    this.optOut = false,
+    this.committee,
+    this.notes,
+    this.introSentAt,
+    this.optOutReason,
+    this.optOutDate,
+    this.optInDate,
+    this.disability,
+    this.politicalExperience,
+    this.currentInvolvement,
+    this.religion,
+    this.instagram,
+    this.tiktok,
+    this.x,
+    this.zodiacSign,
+    this.leadershipExperience,
     this.dateJoined,
-    this.optedOut = false,
-    this.metadata,
+    this.goalsAndAmbitions,
+    this.qualifiedExperience,
+    this.referralSource,
+    this.passionateIssues,
+    this.whyIssuesMatter,
+    this.areasOfInterest,
+    this.createdAt,
   });
 
   factory Member.fromJson(Map<String, dynamic> json) {
     return Member(
       id: json['id'],
       name: json['name'] ?? '',
-      phone: json['phone'] ?? '',
       email: json['email'],
+      phone: json['phone'],
+      phoneE164: json['phone_e164'],
+      dateOfBirth: json['date_of_birth'] != null ? DateTime.parse(json['date_of_birth']) : null,
+      preferredPronouns: json['preferred_pronouns'],
+      genderIdentity: json['gender_identity'],
+      address: json['address'],
       county: json['county'],
-      district: json['district'],
-      gender: json['gender'],
-      age: json['age'],
+      congressionalDistrict: json['congressional_district'],
       race: json['race'],
-      committees: json['committees'] != null
-          ? List<String>.from(json['committees'])
-          : null,
-      dateJoined: json['date_joined'] != null
-          ? DateTime.parse(json['date_joined'])
-          : null,
-      optedOut: json['opted_out'] ?? false,
-      metadata: json['metadata'],
+      sexualOrientation: json['sexual_orientation'],
+      desireToLead: json['desire_to_lead'],
+      hoursPerWeek: json['hours_per_week'],
+      educationLevel: json['education_level'],
+      registeredVoter: json['registered_voter'],
+      inSchool: json['in_school'],
+      schoolName: json['school_name'],
+      employed: json['employed'],
+      industry: json['industry'],
+      hispanicLatino: json['hispanic_latino'],
+      accommodations: json['accommodations'],
+      communityType: json['community_type'],
+      languages: json['languages'],
+      whyJoin: json['why_join'],
+      lastContacted: json['last_contacted'] != null ? DateTime.parse(json['last_contacted']) : null,
+      optOut: json['opt_out'] ?? false,
+      committee: json['committee'] != null ? List<String>.from(json['committee']) : null,
+      notes: json['notes'],
+      introSentAt: json['intro_sent_at'] != null ? DateTime.parse(json['intro_sent_at']) : null,
+      optOutReason: json['opt_out_reason'],
+      optOutDate: json['opt_out_date'] != null ? DateTime.parse(json['opt_out_date']) : null,
+      optInDate: json['opt_in_date'] != null ? DateTime.parse(json['opt_in_date']) : null,
+      disability: json['disability'],
+      politicalExperience: json['political_experience'],
+      currentInvolvement: json['current_involvement'],
+      religion: json['religion'],
+      instagram: json['instagram'],
+      tiktok: json['tiktok'],
+      x: json['x'],
+      zodiacSign: json['zodiac_sign'],
+      leadershipExperience: json['leadership_experience'],
+      dateJoined: json['date_joined'] != null ? DateTime.parse(json['date_joined']) : null,
+      goalsAndAmbitions: json['goals_and_ambitions'],
+      qualifiedExperience: json['qualified_experience'],
+      referralSource: json['referral_source'],
+      passionateIssues: json['passionate_issues'],
+      whyIssuesMatter: json['why_issues_matter'],
+      areasOfInterest: json['areas_of_interest'],
+      createdAt: json['created_at'] != null ? DateTime.parse(json['created_at']) : null,
     );
   }
 
@@ -483,17 +593,55 @@ class Member {
     return {
       'id': id,
       'name': name,
-      'phone': phone,
       'email': email,
+      'phone': phone,
+      'phone_e164': phoneE164,
+      'date_of_birth': dateOfBirth?.toIso8601String(),
+      'preferred_pronouns': preferredPronouns,
+      'gender_identity': genderIdentity,
+      'address': address,
       'county': county,
-      'district': district,
-      'gender': gender,
-      'age': age,
+      'congressional_district': congressionalDistrict,
       'race': race,
-      'committees': committees,
+      'sexual_orientation': sexualOrientation,
+      'desire_to_lead': desireToLead,
+      'hours_per_week': hoursPerWeek,
+      'education_level': educationLevel,
+      'registered_voter': registeredVoter,
+      'in_school': inSchool,
+      'school_name': schoolName,
+      'employed': employed,
+      'industry': industry,
+      'hispanic_latino': hispanicLatino,
+      'accommodations': accommodations,
+      'community_type': communityType,
+      'languages': languages,
+      'why_join': whyJoin,
+      'last_contacted': lastContacted?.toIso8601String(),
+      'opt_out': optOut,
+      'committee': committee,
+      'notes': notes,
+      'intro_sent_at': introSentAt?.toIso8601String(),
+      'opt_out_reason': optOutReason,
+      'opt_out_date': optOutDate?.toIso8601String(),
+      'opt_in_date': optInDate?.toIso8601String(),
+      'disability': disability,
+      'political_experience': politicalExperience,
+      'current_involvement': currentInvolvement,
+      'religion': religion,
+      'instagram': instagram,
+      'tiktok': tiktok,
+      'x': x,
+      'zodiac_sign': zodiacSign,
+      'leadership_experience': leadershipExperience,
       'date_joined': dateJoined?.toIso8601String(),
-      'opted_out': optedOut,
-      'metadata': metadata,
+      'goals_and_ambitions': goalsAndAmbitions,
+      'qualified_experience': qualifiedExperience,
+      'referral_source': referralSource,
+      'passionate_issues': passionateIssues,
+      'why_issues_matter': whyIssuesMatter,
+      'areas_of_interest': areasOfInterest,
+      'created_at': createdAt?.toIso8601String(),
     };
   }
 }
