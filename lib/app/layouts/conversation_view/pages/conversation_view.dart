@@ -6,6 +6,7 @@ import 'package:bluebubbles/app/wrappers/stateful_boilerplate.dart';
 import 'package:bluebubbles/helpers/helpers.dart';
 import 'package:bluebubbles/app/layouts/conversation_view/pages/messages_view.dart';
 import 'package:bluebubbles/app/layouts/conversation_view/widgets/effects/screen_effects_widget.dart';
+import 'package:bluebubbles/app/layouts/conversation_view/widgets/crm/member_sidebar.dart';
 import 'package:bluebubbles/database/models.dart';
 import 'package:bluebubbles/services/services.dart';
 import 'package:bluebubbles/utils/logger/logger.dart';
@@ -35,6 +36,7 @@ class ConversationView extends StatefulWidget {
 
 class ConversationViewState extends OptimizedState<ConversationView> {
   late final ConversationViewController controller = cvc(chat, tag: widget.customService?.tag);
+  bool showCrmSidebar = false; // Toggle for CRM member sidebar
 
   Chat get chat => widget.chat;
 
@@ -231,6 +233,43 @@ class ConversationViewState extends OptimizedState<ConversationView> {
                             ),
                           ],
                         ),
+                        // CRM Member Sidebar - slides in from right on desktop
+                        if (kIsDesktop)
+                          AnimatedPositioned(
+                            duration: const Duration(milliseconds: 300),
+                            curve: Curves.easeInOut,
+                            right: showCrmSidebar ? 0 : -350,
+                            top: 0,
+                            bottom: 0,
+                            width: 350,
+                            child: MemberSidebar(
+                              chat: chat,
+                              onClose: () {
+                                setState(() {
+                                  showCrmSidebar = false;
+                                });
+                              },
+                            ),
+                          ),
+                        // Toggle button for CRM sidebar (floating button on right edge)
+                        if (kIsDesktop && !showCrmSidebar)
+                          Positioned(
+                            right: 10,
+                            top: 100,
+                            child: FloatingActionButton.small(
+                              heroTag: 'crm-sidebar-toggle',
+                              onPressed: () {
+                                setState(() {
+                                  showCrmSidebar = true;
+                                });
+                              },
+                              backgroundColor: context.theme.colorScheme.primary,
+                              child: Icon(
+                                Icons.person,
+                                color: context.theme.colorScheme.onPrimary,
+                              ),
+                            ),
+                          ),
                       ],
                     ),
                   ),
