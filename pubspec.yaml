@@ -48,6 +48,8 @@ dependencies:
       url: https://github.com/BlueBubblesApp/Disable-Battery-Optimizations.git
       ref: master
   dlibphonenumber: ^1.1.12 # phone number parsing
+  # CRM Integration - Supabase for member data
+  supabase_flutter: ^2.5.0
   # todo linux
   dynamic_color: ^1.7.0
   easy_debounce: ^2.0.3

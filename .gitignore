@@ -52,3 +52,7 @@ pubspeck.lock
 *.env
 .vscode/launch.json
 /lib/models/html/giphy.dart
+
+# Node modules (from Next.js backup)
+node_modules/
+package-lock.json

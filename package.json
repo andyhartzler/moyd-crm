@@ -1,0 +1,7 @@
+{
+  "dependencies": {
+    "@vercel/speed-insights": "^1.2.0",
+    "googleapis": "^162.0.0",
+    "recharts": "^3.2.1"
+  }
+}

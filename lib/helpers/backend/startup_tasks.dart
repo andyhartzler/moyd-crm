@@ -63,6 +63,14 @@ class StartupTasks {
 
     await notif.init();
     await intents.init();
+
+    // Initialize CRM services (Supabase for member data)
+    try {
+      await supabaseCrm.onInit();
+      Logger.info("CRM services initialized successfully");
+    } catch (e, s) {
+      Logger.warn("Failed to initialize CRM services - CRM features will be unavailable", error: e, trace: s);
+    }
   }
 
   static Future<void> initIsolateServices() async {
