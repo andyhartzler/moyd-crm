@@ -1,0 +1,10 @@
+var R=require("../../../chunks/[turbopack]_runtime.js")("server/app/api/send-message/route.js")
+R.c("server/chunks/node_modules_@supabase_node-fetch_lib_index_d6dc7176.js")
+R.c("server/chunks/node_modules_next_c7068afa._.js")
+R.c("server/chunks/node_modules_tr46_3e4df63f._.js")
+R.c("server/chunks/node_modules_@supabase_auth-js_dist_module_b36180bc._.js")
+R.c("server/chunks/node_modules_ca908dd7._.js")
+R.c("server/chunks/[root-of-the-server]__b8e9e481._.js")
+R.m("[project]/.next-internal/server/app/api/send-message/route/actions.js [app-rsc] (server actions loader, ecmascript)")
+R.m("[project]/node_modules/next/dist/esm/build/templates/app-route.js { INNER_APP_ROUTE => \"[project]/src/app/api/send-message/route.js [app-route] (ecmascript)\" } [app-route] (ecmascript)")
+module.exports=R.m("[project]/node_modules/next/dist/esm/build/templates/app-route.js { INNER_APP_ROUTE => \"[project]/src/app/api/send-message/route.js [app-route] (ecmascript)\" } [app-route] (ecmascript)").exports

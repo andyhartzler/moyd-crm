@@ -1,0 +1,10 @@
+{
+  "/_not-found/page": "app/_not-found/page.js",
+  "/api/messages/route": "app/api/messages/route.js",
+  "/api/send-message/route": "app/api/send-message/route.js",
+  "/conversations/page": "app/conversations/page.js",
+  "/members/page": "app/members/page.js",
+  "/messenger/page": "app/messenger/page.js",
+  "/messenger/route": "app/messenger/route.js",
+  "/page": "app/page.js"
+}
