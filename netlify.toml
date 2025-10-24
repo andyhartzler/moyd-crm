@@ -1,7 +1,18 @@
 [build]
-  base = "moyd-crm"
-  command = "npm install && npm run build"
-  publish = ".next"
+  command = """
+    git clone https://github.com/flutter/flutter.git --depth 1 && \
+    cd flutter && \
+    git fetch --depth 1 origin ee4e09cce01d6f2d7f4baebd247fde02e5008851 && \
+    git checkout ee4e09cce01d6f2d7f4baebd247fde02e5008851 && \
+    cd .. && \
+    export PATH="$PATH:`pwd`/flutter/bin" && \
+    flutter doctor -v && \
+    flutter config --enable-web && \
+    flutter pub get && \
+    flutter pub run build_runner build --delete-conflicting-outputs && \
+    flutter build web --release --base-href=/
+  """
+  publish = "build/web"
 
 [build.environment]
   NODE_VERSION = "20"
