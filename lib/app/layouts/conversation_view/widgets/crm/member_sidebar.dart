@@ -9,10 +9,12 @@ import 'package:get/get.dart';
 /// Links BlueBubbles chats (ObjectBox) with Supabase member data
 class MemberSidebar extends StatefulWidget {
   final Chat chat;
+  final VoidCallback? onClose;
 
   const MemberSidebar({
     Key? key,
     required this.chat,
+    this.onClose,
   }) : super(key: key);
 
   @override
@@ -135,6 +137,15 @@ class _MemberSidebarState extends State<MemberSidebar> {
                     fontWeight: FontWeight.bold,
                   ),
                 ),
+                const Spacer(),
+                if (widget.onClose != null)
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: widget.onClose,
+                    iconSize: 20,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  ),
               ],
             ),
           ),
