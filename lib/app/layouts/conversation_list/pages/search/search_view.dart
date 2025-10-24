@@ -18,7 +18,6 @@ import 'package:flutter_acrylic/flutter_acrylic.dart';
 import 'package:get/get.dart';
 import 'package:sliding_up_panel2/sliding_up_panel2.dart';
 import 'package:tuple/tuple.dart';
-import 'package:objectbox/src/native/query/query.dart' as obx;
 
 class SearchResult {
   final String search;
@@ -105,7 +104,7 @@ class SearchViewState extends OptimizedState<SearchView> {
     );
 
     if (local) {
-      obx.Condition<Message> condition = Message_.text
+      dynamic condition = Message_.text
           .contains(currentSearchTerm!, caseSensitive: false)
           .and(Message_.associatedMessageGuid.isNull())
           .and(Message_.dateDeleted.isNull())
