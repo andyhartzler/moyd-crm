@@ -4,9 +4,14 @@
     export PATH="$PATH:`pwd`/flutter/bin" && \
     flutter doctor -v && \
     flutter config --enable-web && \
-    flutter build web --release
+    flutter pub get && \
+    flutter build web --release --base-href=/
   """
   publish = "build/web"
+
+[build.environment]
+  # Optimize build performance
+  NODE_VERSION = "18"
 
 [[redirects]]
   from = "/*"
