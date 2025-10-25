@@ -1,6 +1,5 @@
 [build]
   base = "moyd-crm-nextjs"
-  command = "npm run build"
 
 [build.environment]
   NODE_VERSION = "20"
