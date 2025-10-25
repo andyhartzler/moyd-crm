@@ -9,7 +9,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
-import 'package:open_filex/open_filex.dart';
+// import 'package:open_filex/open_filex.dart'; // Not needed for web builds
 import 'package:path/path.dart';
 import 'package:universal_html/html.dart' as html;
 import 'package:universal_io/io.dart';
@@ -104,7 +104,9 @@ class _ContactCardState extends OptimizedState<ContactCard> with AutomaticKeepAl
                 ..setAttribute("download", widget.file.name)
                 ..click();
             } else {
-              await OpenFilex.open("${fs.appDocDir.path}/attachments/${widget.attachment.guid!}/${basename(widget.file.path!)}", type: widget.attachment.mimeType);
+              // OpenFilex not available in web build - this code only runs on mobile/desktop
+              // await OpenFilex.open("${fs.appDocDir.path}/attachments/${widget.attachment.guid!}/${basename(widget.file.path!)}", type: widget.attachment.mimeType);
+              throw UnimplementedError('File opening not implemented for this platform');
             }
           },
           child: Padding(

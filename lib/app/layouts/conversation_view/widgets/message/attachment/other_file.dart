@@ -12,7 +12,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:mime_type/mime_type.dart';
-import 'package:open_filex/open_filex.dart';
+// import 'package:open_filex/open_filex.dart'; // Not needed for web builds
 import 'package:path/path.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:universal_html/html.dart' as html;
@@ -58,21 +58,12 @@ class OtherFile extends StatelessWidget {
           }
           launchUrl(Uri.file(_file.path));
         } else {
+          // OpenFilex not available in web build - this code only runs on mobile platforms
+          // Web and desktop paths are handled above
           try {
-            final res = await OpenFilex.open("${fs.appDocDir.path}/attachments/${attachment.guid!}/${basename(file.path!)}");
-            if (res.type == ResultType.noAppToOpen) {
-              showSnackbar('Error', "No handler for this file type! Using share menu instead.");
-              await Future.delayed(const Duration(seconds: 1));
-              Share.file(file.name, file.path!);
-            } else if (res.type == ResultType.error) {
-              showSnackbar('Error', res.message);
-            } else if (res.type == ResultType.fileNotFound) {
-              showSnackbar('Not Found', "File not found at path: ${file.path}");
-            } else if (res.type == ResultType.permissionDenied) {
-              showSnackbar('Permission Denied', "BlueBubbles does not have access to this file! Using share menu instead.");
-              await Future.delayed(const Duration(seconds: 1));
-              Share.file(file.name, file.path!);
-            }
+            showSnackbar('Error', "File opening not available on this platform. Using share menu instead.");
+            await Future.delayed(const Duration(seconds: 1));
+            Share.file(file.name, file.path!);
           } catch (ex) {
             Logger.error("Error opening file: ${file.path}", error: ex);
             showSnackbar('Error', "No handler for this file type!");

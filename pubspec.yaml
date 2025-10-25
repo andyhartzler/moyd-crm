@@ -131,7 +131,7 @@ dependencies:
   objectbox: ^4.0.1
   objectbox_flutter_libs: any
   on_exit: ^1.0.0
-  open_filex: ^4.4.0
+  # open_filex: ^4.4.0  # Not compatible with web builds - removed for Netlify deployment
   package_info_plus: ^8.0.0
   particles_flutter: ^1.0.1
   pasteboard: ^0.3.0
